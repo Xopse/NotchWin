@@ -31,6 +31,10 @@ public class AppConfig
 
     // ---------- General ----------
     public bool RunOnStartup { get; set; } = true;
+    /// <summary>Install new versions from GitHub Releases automatically.</summary>
+    public bool AutoUpdate { get; set; } = true;
+    /// <summary>The GitHub repository updates come from ("owner/name"). It must be public for updates to work.</summary>
+    public string UpdateRepo { get; set; } = "Xopse/NotchWin";
     /// <summary>"Games" = hide only while a game is in front, "AnyFullscreen" = hide for any fullscreen app, "Never".</summary>
     public string HideMode { get; set; } = "Games";
 
@@ -69,8 +73,14 @@ public class AppConfig
     /// <summary>"WakeWord" = always listening for the wake word, "Hotkey" = mic only on Ctrl+Alt+Space, "Off".</summary>
     public string VoiceMode { get; set; } = "WakeWord";
     public List<string> WakeWords { get; set; } = new() { "computer", "jarvis" };
+    /// <summary>"low" (fewest false alarms), "medium" or "high" (reacts to quieter / quicker wake words).</summary>
+    public string WakeSensitivity { get; set; } = "medium";
     public string VoskModelUrl { get; set; } = VoskIndian;
     public bool SpeakReplies { get; set; } = true;
+    /// <summary>"auto" = Groq Whisper when a Groq key is available (much more accurate), otherwise offline. "offline" = never send audio.</summary>
+    public string SpeechEngine { get; set; } = "auto";
+    /// <summary>Only needed if your AI provider isn't Groq but you still want Groq's speech recognition.</summary>
+    public string GroqSpeechKey { get; set; } = "";
 
     public const string VoskIndian = "https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip";
     public const string VoskUs = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip";

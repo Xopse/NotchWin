@@ -14,7 +14,7 @@
     <RootNamespace>NotchWin</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Product>NotchWin</Product>
-    <Version>1.6.0</Version>
+    <Version>1.7.2</Version>
     <ApplicationIcon>Assets\NotchWin.ico</ApplicationIcon>
     <Company>NotchWin</Company>
     <Description>A Dynamic-Island-style notch for Windows</Description>

@@ -14,6 +14,7 @@ public class Theme
     public string Description = "";
     public Color Bg1, Bg2;                 // background gradient: top → bottom
     public Color Border = Colors.Transparent;
+    public Color? Border2;                 // if set, the border is a gradient Border → Border2
     public double BorderThickness;
     public Color Glow = Colors.Black;      // shadow colour (a coloured glow for neon-style themes)
     public double GlowOpacity = 0.55;
@@ -74,6 +75,11 @@ public class Theme
             Glow = C("#000000"), GlowOpacity = 0.25, Fg = C("#16161A"),
             Accent1 = C("#2563EB"), Accent2 = C("#9333EA"), Accent3 = C("#16A34A") },
 
+        new() { Id = "neoncoast", Name = "Neon Coast", Description = "Miami sunset: hot pink, orange and teal neon",
+            Bg1 = C("#1A0626"), Bg2 = C("#6B1550"), Border = C("#FFFF5FA2"), Border2 = C("#FFFFB347"), BorderThickness = 1.4,
+            Glow = C("#FF3D9A"), GlowOpacity = 0.8,
+            Accent1 = C("#FF6EC7"), Accent2 = C("#FFB347"), Accent3 = C("#2DE2E6") },
+
         new() { Id = "vibe", Name = "Vibe", Description = "Takes its colours from whatever's playing",
             Bg1 = C("#050505"), Bg2 = C("#1B1440"),
             Glow = C("#5B3FD9"), GlowOpacity = 0.5,
@@ -101,7 +107,9 @@ public class Theme
         ["ButtonPress"] = new SolidColorBrush(WithAlpha(Fg, 0x66)),
         ["TileBg"] = new SolidColorBrush(WithAlpha(Fg, 0x14)),
         ["TileHover"] = new SolidColorBrush(WithAlpha(Fg, 0x33)),
-        ["NotchBorder"] = new SolidColorBrush(Border),
+        ["NotchBorder"] = Border2 == null
+            ? (Brush)new SolidColorBrush(Border)
+            : new LinearGradientBrush(Border, Border2.Value, 0),
         ["Eq"] = new SolidColorBrush(Accent3),
     };
 

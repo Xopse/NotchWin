@@ -27,8 +27,9 @@
 | 🔴 **Streaming** | A LIVE / REC dot from OBS, plus mic and camera in-use dots |
 | 📊 **System** | CPU, RAM, GPU usage and **GPU temperature**, network speed and ping |
 | 🌦️ **Weather** | Shows the local weather automatically, no key needed |
-| 🎙️ **Voice assistant** | "computer, play blinding lights": offline speech recognition, plus optional AI (Groq has a free plan) |
-| 🎨 **11 themes** | Midnight, Nightfall, Aurora, Sunset, Ocean, Neon, Sakura, Ember, Glass, Daylight, and **Vibe**, which matches your album art |
+| 🎙️ **Voice assistant** | "computer, play blinding lights": the wake word is detected offline, then Groq Whisper (free) understands the command. Say "computer" to interrupt it mid-reply |
+| 🎨 **12 themes** | Midnight, Nightfall, Aurora, Sunset, Ocean, Neon, Sakura, Ember, Glass, Daylight, **Neon Coast** (Miami sunset), and **Vibe**, which matches your album art |
+| 🔄 **Auto-update** | Installed copies update themselves from GitHub Releases |
 | 🖱️ **Movable** | Drag it anywhere: it docks to the top or bottom edge, turns **vertical** on the left or right edge, or floats. It always opens towards the free side, so nothing gets cut off |
 | 🎧 **Your music app** | Pick Spotify or YouTube Music for the Music tile and "play …" |
 | 🪶 **Lightweight** | Stats are only measured while it's open, animations only run while visible, and spare memory is handed back |
@@ -53,7 +54,7 @@ Windows SmartScreen may warn you because the app isn't code-signed. Click **More
 - starts NotchWin when you sign in
 - shows up under **Settings → Apps → Installed apps**, so you can uninstall it from there
 
-To update, run the installer from the new version. Your settings are kept.
+**Updates are automatic.** NotchWin checks GitHub Releases at start-up and every 6 hours, then installs new versions itself. It waits until you're not in a game. You can also go to Settings → About → *Check for updates now*.
 
 **Requirements:** Windows 10 (2004 or later) or Windows 11, 64-bit (x64).
 
@@ -91,7 +92,7 @@ Right-click the notch → **Settings**, or launch **NotchWin Settings** from the
 | Tab | What's there |
 |---|---|
 | **Notch** | Position, when to hide (games only / any fullscreen / never), size, hover delay, what the pill shows, start with Windows |
-| **Themes** | 11 themes with live preview |
+| **Themes** | 12 themes with live preview |
 | **Voice & AI** | Voice mode (always listening / hotkey only / off), wake words, speech model, and the AI provider: **Groq (free)**, Grok, Claude, or any OpenAI-compatible server |
 | **Weather & Streaming** | City (or auto-detect) and °C/°F, plus the OBS WebSocket port and password |
 | **Notifications** | Which apps and keywords pop up, and pop-up timing |
@@ -102,7 +103,7 @@ Settings are stored in `%AppData%\NotchWin\config.json`, on your PC only.
 
 ## Privacy
 
-- **Speech recognition** runs offline on your PC (Vosk). Nothing you say is sent anywhere unless the AI is turned on, and then only the sentence after the wake word goes to the AI provider you chose.
+- **Speech recognition:** the wake word is always detected offline on your PC (Vosk). With *Groq Whisper* selected (the default when you have a Groq key), only the few seconds after the wake word are sent to Groq to be turned into text. Choose *Offline only* in Settings to keep everything on your PC.
 - **Notifications** are read locally from Windows' own notification database and never leave your PC.
 - **Network use:** the weather comes from Open-Meteo (it uses your approximate location, from your IP address via ipwho.is, unless you set a city). The voice model is downloaded once from alphacephei.com. "Play …" commands look the song up on YouTube.
 
@@ -121,7 +122,7 @@ git tag v1.5.0
 git push origin v1.5.0
 ```
 
-GitHub Actions then builds a self-contained zip (no .NET needed on the target PC) and attaches it to a new release on the **Releases** page.
+GitHub Actions then builds a self-contained zip (no .NET needed on the target PC) and attaches it to a new release on the **Releases** page. The tag sets the version number, and **every installed copy updates itself to it**. This only works while the repository is public, because GitHub hides private releases from everyone else.
 
 ### How it's built
 
@@ -144,7 +145,7 @@ GitHub Actions then builds a self-contained zip (no .NET needed on the target PC
 - **Doesn't start with Windows:** open Task Manager → **Startup apps** and make sure NotchWin is *Enabled*.
 - **A game isn't detected:** with the game in front, right-click the notch and choose **Treat "game.exe" as a game**.
 - **"Play …" opens the song paused:** play anything on music.youtube.com once so your browser allows autoplay.
-- **The voice assistant mishears a song:** say the artist too, or add a free Groq key so the AI can correct it.
+- **The voice assistant mishears you:** add a free Groq key (Settings → Voice & AI) so Groq Whisper handles recognition. It's far more accurate than offline mode.
 - **An app's notifications don't pop up (e.g. Discord):** Settings → Notifications → **Check recent notifications** shows what Windows recorded. If the app isn't listed, Windows never got a notification: for Discord, check User Settings → Notifications → *Enable Desktop Notifications*. Discord also skips them while its window is focused, and by default only notifies for DMs and @mentions.
 - **GPU temperature shows nothing:** it needs a graphics driver that reports it to Windows (the same reading Task Manager shows). Most NVIDIA and AMD cards do; many Intel integrated GPUs don't.
 - **Anything else:** Settings → About → **Open log**.

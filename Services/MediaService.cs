@@ -31,6 +31,8 @@ public class MediaService
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string _lastKey;
     private byte[] _thumb;
+    private byte[] _previousThumb;
+    private DateTime _trackChangedAt = DateTime.MinValue;
 
     public MediaInfo Current { get; private set; }
     public event Action<MediaInfo> Changed;
@@ -136,9 +138,16 @@ public class MediaService
             string key = title + "|" + artist + "|" + s.SourceAppUserModelId;
             if (key != _lastKey)
             {
+                // New song: forget the old cover. Players often send the new title a moment before the
+                // new cover, so for a few seconds don't accept the previous song's picture again.
                 _lastKey = key;
+                _previousThumb = _thumb;
                 _thumb = null;
                 _site = null;
+                _trackChangedAt = DateTime.Now;
+                // Check again shortly, in case the app doesn't announce the new cover itself.
+                foreach (var ms in new[] { 700, 1600, 3500 })
+                    _ = Task.Delay(ms).ContinueWith(_ => RefreshAsync());
             }
             string source = FriendlySource(s.SourceAppUserModelId);
             if (IsBrowser(source))
@@ -147,18 +156,28 @@ public class MediaService
                 _site ??= SiteFromWindowTitles(title);
                 if (_site != null) source = _site;
             }
-            // Apps often send the cover art a moment after the title, so keep trying until we get it.
-            if (_thumb == null && props?.Thumbnail != null)
+            // Re-read the cover every time (it's small) and only swap it when the picture really changed.
+            if (props?.Thumbnail != null)
             {
                 try
                 {
                     using var ras = await props.Thumbnail.OpenReadAsync();
                     using var stream = ras.AsStreamForRead();
-                    using var ms = new MemoryStream();
-                    await stream.CopyToAsync(ms);
-                    if (ms.Length > 0) _thumb = ms.ToArray();
+                    using var mem = new MemoryStream();
+                    await stream.CopyToAsync(mem);
+                    byte[] art = mem.Length > 0 ? mem.ToArray() : null;
+
+                    bool stillOldSongsCover = art != null && _previousThumb != null &&
+                                              (DateTime.Now - _trackChangedAt).TotalSeconds < 5 &&
+                                              art.AsSpan().SequenceEqual(_previousThumb);
+                    if (art != null && !stillOldSongsCover && (_thumb == null || !art.AsSpan().SequenceEqual(_thumb)))
+                        _thumb = art;
                 }
                 catch { /* some apps expose no art */ }
+            }
+            else if (_thumb != null && (DateTime.Now - _trackChangedAt).TotalSeconds > 5)
+            {
+                _thumb = null; // the app removed its cover
             }
 
             Publish(new MediaInfo

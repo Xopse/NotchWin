@@ -183,6 +183,66 @@ public partial class MainWindow : Window
         _hitTest.Start();
         _trim.Interval = TimeSpan.FromSeconds(30); // first trim once everything has started
         _trim.Start();
+
+        // Auto-update: first check a minute after start, then every 6 hours.
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMinutes(1));
+            while (true)
+            {
+                if (_cfg.AutoUpdate && Updater.IsInstalledCopy)
+                {
+                    try { await Dispatcher.InvokeAsync(() => CheckForUpdatesAsync(manual: false)).Task.Unwrap(); }
+                    catch (Exception ex) { Log.Write("Update: " + ex.Message); }
+                }
+                await Task.Delay(TimeSpan.FromHours(6));
+            }
+        });
+    }
+
+    // =====================================================================
+    //  Updates
+    // =====================================================================
+
+    private bool _updating;
+
+    /// <summary>Checks GitHub for a newer release and installs it. Returns a short status for Settings.</summary>
+    public async Task<string> CheckForUpdatesAsync(bool manual)
+    {
+        if (_updating) return "An update is already being installed.";
+        var (release, problem) = await Updater.GetLatestAsync(_cfg.UpdateRepo);
+        if (release == null) return problem;
+        if (release.Version <= Updater.Current) return $"You're up to date (version {Updater.Current}).";
+        if (!Updater.IsInstalledCopy)
+            return $"Version {release.Version} is available. This copy isn't the installed one, so install it with the installer.";
+
+        _updating = true;
+        var green = Color.FromRgb(0x30, 0xD1, 0x58);
+        try
+        {
+            Push(new Activity { Tag = "update", Sticky = true, Glyph = "\uE896", Accent = green,
+                Title = $"Updating to {release.Tag}", Subtitle = "Downloading..." });
+            var (appDir, pkgRoot) = await Updater.DownloadAsync(release);
+
+            // Don't restart in the middle of a game.
+            while (_hidden && !manual) await Task.Delay(TimeSpan.FromSeconds(30));
+
+            Push(new Activity { Tag = "update", Sticky = true, Glyph = "\uE777", Accent = green,
+                Title = $"Installing {release.Tag}", Subtitle = "NotchWin will be back in a few seconds." });
+            await Task.Delay(2500);
+            Updater.ApplyAndRestart(appDir, pkgRoot, release.Version);
+            _settings?.Close();
+            Close();
+            return $"Installing {release.Tag}...";
+        }
+        catch (Exception ex)
+        {
+            _updating = false;
+            Log.Write("Update failed: " + ex);
+            Push(new Activity { Tag = "update", Glyph = "\uE7BA", Accent = Color.FromRgb(0xFF, 0x9F, 0x0A), Seconds = 6,
+                Title = "Update failed", Subtitle = ex.Message });
+            return "Update failed: " + ex.Message;
+        }
     }
 
     // =====================================================================
@@ -473,12 +533,16 @@ public partial class MainWindow : Window
 
             case VoiceAssistant.State.Listening:
                 Push(new Activity { Tag = "voice", Sticky = true, Glyph = "\uE720", Accent = cyan,
-                    Title = "Listening...", Subtitle = "Try \"play lofi beats\", \"next song\", \"open discord\"" });
+                    Title = "Listening...",
+                    Subtitle = _voice != null && _voice.UsesCloudSpeech
+                        ? "Speak naturally. I'll stop listening when you pause."
+                        : "Try \"play lofi beats\", \"next song\", \"open discord\"" });
                 break;
 
             case VoiceAssistant.State.Thinking:
                 Push(new Activity { Tag = "voice", Sticky = true, Glyph = "\uE720", Accent = cyan,
-                    Title = $"“{detail}”", Subtitle = "On it..." });
+                    Title = string.IsNullOrEmpty(detail) ? "Got it..." : $"“{detail}”",
+                    Subtitle = string.IsNullOrEmpty(detail) ? "Working out what you said" : "On it..." });
                 break;
 
             case VoiceAssistant.State.Idle:
@@ -1289,7 +1353,7 @@ public partial class MainWindow : Window
             _settings.Activate();
             return;
         }
-        _settings = new SettingsWindow(onSaved: Restart, previewTheme: ApplyTheme);
+        _settings = new SettingsWindow(onSaved: Restart, previewTheme: ApplyTheme, checkUpdates: () => CheckForUpdatesAsync(manual: true));
         _settings.Closed += (s, e) =>
         {
             _settings = null;

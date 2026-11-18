@@ -121,14 +121,28 @@
 
                         <TextBlock Text="Wake words (comma separated)" Style="{StaticResource Label}" />
                         <TextBox x:Name="WakeWordsBox" Width="360" HorizontalAlignment="Left" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Single common English words work best, e.g. computer, jarvis." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Longer, distinctive words work best (computer, jarvis). Short everyday words cause more false alarms." />
+                        <TextBlock Text="Wake word sensitivity" Style="{StaticResource Label}" />
+                        <ComboBox x:Name="WakeSensBox" Width="360" HorizontalAlignment="Left">
+                            <ComboBoxItem Tag="low" Content="Low: fewest false alarms (say it clearly and loudly)" />
+                            <ComboBoxItem Tag="medium" Content="Medium (recommended)" />
+                            <ComboBoxItem Tag="high" Content="High: hears you from further away / when it's noisy" />
+                        </ComboBox>
 
                         <TextBlock Text="Speech model" Style="{StaticResource Label}" />
                         <ComboBox x:Name="VoskBox" Width="360" HorizontalAlignment="Left">
                             <ComboBoxItem Tag="in" Content="English (India)" />
                             <ComboBoxItem Tag="us" Content="English (US)" />
                         </ComboBox>
-                        <CheckBox x:Name="SpeakBox" Content="Speak replies out loud" />
+                        <TextBlock Text="Understanding what you say" Style="{StaticResource Label}" />
+                        <ComboBox x:Name="SpeechEngineBox" Width="420" HorizontalAlignment="Left">
+                            <ComboBoxItem Tag="auto" Content="Groq Whisper: very accurate (free Groq key)" />
+                            <ComboBoxItem Tag="offline" Content="Offline only: private, but less accurate" />
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource Hint}" Text="The wake word is always detected offline. With Groq Whisper, only the few seconds after the wake word are sent to Groq to be turned into text. It uses the Groq key below when Groq is your AI provider." />
+                        <TextBlock Text="Groq key for speech (only if your AI provider isn't Groq)" Style="{StaticResource Label}" />
+                        <PasswordBox x:Name="SpeechKeyBox" Width="360" HorizontalAlignment="Left" />
+                                                <CheckBox x:Name="SpeakBox" Content="Speak replies out loud" />
 
                         <TextBlock Text="AI for questions" Style="{StaticResource H2}" />
                         <TextBlock Style="{StaticResource Hint}" Text="Commands like play, pause, open, weather work without this. Add a key so it can also answer anything else (“computer, how far is the moon”)." />
@@ -279,6 +293,14 @@
                             <Button Content="Open settings folder" Click="OpenFolder_Click" />
                             <Button Content="Open log" Margin="8,0,0,0" Click="OpenLog_Click" />
                         </StackPanel>
+                        <TextBlock Text="Updates" Style="{StaticResource H2}" />
+                        <CheckBox x:Name="AutoUpdateBox" Content="Install new versions automatically" />
+                        <TextBlock Style="{StaticResource Hint}" Text="NotchWin checks GitHub Releases at start-up and every 6 hours. When there's a new version it downloads it, waits until you're not in a game, and restarts itself. (Only works while the GitHub repository is public.)" />
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="Check for updates now" Click="CheckUpdates_Click" />
+                            <TextBlock x:Name="UpdateStatus" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="400" Opacity="0.8" />
+                        </StackPanel>
+
                         <TextBlock Text="Quit" Style="{StaticResource H2}" />
                         <TextBlock Style="{StaticResource Hint}" Text="Closes the notch completely. Start it again from the Start menu (search “NotchWin”) or the desktop shortcut. If “Start with Windows” is on, it also comes back the next time you sign in." />
                         <Button Content="Quit NotchWin" HorizontalAlignment="Left" Margin="0,10,0,0" Click="Quit_Click" />

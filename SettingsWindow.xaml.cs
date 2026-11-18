@@ -20,7 +20,9 @@ public partial class SettingsWindow : Window
     private string _themeId;
     private readonly ObservableCollection<ShortcutItem> _shortcuts;
 
-    public SettingsWindow(Action onSaved, Action<string> previewTheme = null)
+    private readonly Func<Task<string>> _checkUpdates;
+
+    public SettingsWindow(Action onSaved, Action<string> previewTheme = null, Func<Task<string>> checkUpdates = null)
     {
         // Built-in Windows 11 style dark theme (WPF on .NET 9+).
 #pragma warning disable WPF0001
@@ -30,6 +32,7 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         _onSaved = onSaved;
         _previewTheme = previewTheme;
+        _checkUpdates = checkUpdates;
         _cfg = AppConfig.Load(); // fresh copy from disk
         _themeId = Theme.Find(_cfg.Theme).Id;
         BuildThemeCards();
@@ -103,13 +106,17 @@ public partial class SettingsWindow : Window
         ShowWeatherBox.IsChecked = _cfg.ShowWeatherInPill;
         SongPopupBox.IsChecked = _cfg.ShowSongPopups;
         StartupBox.IsChecked = _cfg.RunOnStartup;
+        AutoUpdateBox.IsChecked = _cfg.AutoUpdate;
 
         // Voice & AI
         SelectByTag(MusicBox, (_cfg.MusicService ?? "").Contains("spotify") ? "spotify" : "youtube music", "youtube music");
         SelectByTag(VoiceModeBox, _cfg.VoiceMode, "WakeWord");
         WakeWordsBox.Text = string.Join(", ", _cfg.WakeWords);
+        SelectByTag(WakeSensBox, _cfg.WakeSensitivity, "medium");
         SelectByTag(VoskBox, _cfg.VoskModelUrl == AppConfig.VoskUs ? "us" : "in", "in");
         SpeakBox.IsChecked = _cfg.SpeakReplies;
+        SelectByTag(SpeechEngineBox, _cfg.SpeechEngine, "auto");
+        SpeechKeyBox.Password = _cfg.GroqSpeechKey ?? "";
         SelectByTag(ProviderBox, _cfg.AiProvider, "groq");
         KeyBox.Password = _cfg.AiApiKey ?? "";
         BaseUrlBox.Text = _cfg.AiBaseUrl ?? "";
@@ -148,13 +155,17 @@ public partial class SettingsWindow : Window
         c.ShowWeatherInPill = ShowWeatherBox.IsChecked == true;
         c.ShowSongPopups = SongPopupBox.IsChecked == true;
         c.RunOnStartup = StartupBox.IsChecked == true;
+        c.AutoUpdate = AutoUpdateBox.IsChecked == true;
 
         c.MusicService = TagOf(MusicBox, "youtube music");
         c.VoiceMode = TagOf(VoiceModeBox, "WakeWord");
         c.WakeWords = SplitList(WakeWordsBox.Text, ',').Select(w => w.ToLowerInvariant()).ToList();
         if (c.WakeWords.Count == 0) c.WakeWords.Add("computer");
+        c.WakeSensitivity = TagOf(WakeSensBox, "medium");
         c.VoskModelUrl = TagOf(VoskBox, "in") == "us" ? AppConfig.VoskUs : AppConfig.VoskIndian;
         c.SpeakReplies = SpeakBox.IsChecked == true;
+        c.SpeechEngine = TagOf(SpeechEngineBox, "auto");
+        c.GroqSpeechKey = SpeechKeyBox.Password.Trim();
         c.AiProvider = TagOf(ProviderBox, "groq");
         c.AiApiKey = KeyBox.Password.Trim();
         c.AiBaseUrl = BaseUrlBox.Text.Trim();
@@ -223,7 +234,7 @@ public partial class SettingsWindow : Window
             var mini = new Border
             {
                 Background = theme.MakeBackground(),
-                BorderBrush = new SolidColorBrush(theme.Border),
+                BorderBrush = theme.MakeBrushes()["NotchBorder"],
                 BorderThickness = new Thickness(theme.BorderThickness),
                 CornerRadius = new CornerRadius(0, 0, 14, 14),
                 Padding = new Thickness(12, 0, 12, 0),
@@ -283,6 +294,14 @@ public partial class SettingsWindow : Window
             kv.Value.BorderBrush = kv.Key == _themeId
                 ? new SolidColorBrush(Color.FromRgb(0x60, 0xA5, 0xFA))
                 : Brushes.Transparent;
+    }
+
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        if (_checkUpdates == null) return;
+        UpdateStatus.Text = "Checking GitHub...";
+        try { UpdateStatus.Text = await _checkUpdates(); }
+        catch (Exception ex) { UpdateStatus.Text = "Couldn't check: " + ex.Message; }
     }
 
     private async void CheckNotifs_Click(object sender, RoutedEventArgs e)

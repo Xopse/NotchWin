@@ -24,7 +24,13 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Build (self-contained, x64)
-        run: dotnet publish NotchWin.csproj -c Release -r win-x64 --self-contained true -o out/app
+        shell: pwsh
+        run: |
+          # A tag like v1.7.0 sets the app's version, so installed copies know they're out of date.
+          $extra = @()
+          if ("${{ github.ref_type }}" -eq "tag") { $extra += "-p:Version=$("${{ github.ref_name }}".TrimStart('v','V'))" }
+          dotnet publish NotchWin.csproj -c Release -r win-x64 --self-contained true -o out/app @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package
         shell: pwsh
