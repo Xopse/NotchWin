@@ -104,26 +104,11 @@ public class NotificationService
     {
         if (!File.Exists(_dbPath)) return;
 
-        string path = _dbPath;
         string tempCopy = null;
         SqliteConnection conn = null;
         try
         {
-            try
-            {
-                conn = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Cache=Shared;Pooling=False");
-                conn.Open();
-            }
-            catch
-            {
-                // Locked? Read a snapshot copy instead.
-                conn?.Dispose();
-                tempCopy = Path.Combine(Path.GetTempPath(), "notchwin_wpn.db");
-                File.Copy(_dbPath, tempCopy, true);
-                if (File.Exists(_dbPath + "-wal")) File.Copy(_dbPath + "-wal", tempCopy + "-wal", true);
-                conn = new SqliteConnection($"Data Source={tempCopy};Pooling=False");
-                conn.Open();
-            }
+            conn = OpenDb(_dbPath, out tempCopy);
 
             if (_lastId < 0)
             {
@@ -152,7 +137,7 @@ public class NotificationService
                 string handler = r.IsDBNull(2) ? "" : r.GetString(2);
 
                 var item = Parse(payload, handler);
-                if (item != null && IsImportant(item)) Received?.Invoke(item);
+                if (item != null && IsImportant(_cfg, item)) Received?.Invoke(item);
             }
         }
         finally
@@ -160,6 +145,78 @@ public class NotificationService
             conn?.Dispose();
             if (tempCopy != null) { try { File.Delete(tempCopy); File.Delete(tempCopy + "-wal"); } catch { } }
         }
+    }
+
+    private static string DefaultDbPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        @"Microsoft\Windows\Notifications\wpndatabase.db");
+
+    private static SqliteConnection OpenDb(string dbPath, out string tempCopy)
+    {
+        tempCopy = null;
+        try
+        {
+            var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly;Cache=Shared;Pooling=False");
+            conn.Open();
+            return conn;
+        }
+        catch
+        {
+            // Locked? Read a snapshot copy instead.
+            tempCopy = Path.Combine(Path.GetTempPath(), "notchwin_wpn_" + Guid.NewGuid().ToString("N") + ".db");
+            File.Copy(dbPath, tempCopy, true);
+            if (File.Exists(dbPath + "-wal")) File.Copy(dbPath + "-wal", tempCopy + "-wal", true);
+            var conn = new SqliteConnection($"Data Source={tempCopy};Pooling=False");
+            conn.Open();
+            return conn;
+        }
+    }
+
+    /// <summary>
+    /// For Settings → Notifications → "Check": the last few notifications Windows recorded,
+    /// and whether the notch would show each one. Handy for "why didn't X pop up?".
+    /// </summary>
+    public static List<string> Diagnose(AppConfig cfg, int count = 15)
+    {
+        var lines = new List<string>();
+        string db = DefaultDbPath;
+        if (!File.Exists(db)) { lines.Add("Windows' notification database wasn't found on this PC."); return lines; }
+
+        string tempCopy = null;
+        SqliteConnection conn = null;
+        try
+        {
+            conn = OpenDb(db, out tempCopy);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+                SELECT n.Payload, h.PrimaryId, n.ArrivalTime
+                FROM Notification n
+                LEFT JOIN NotificationHandler h ON n.HandlerId = h.RecordId
+                WHERE n.Type = 'toast'
+                ORDER BY n.Id DESC
+                LIMIT $n";
+            cmd.Parameters.AddWithValue("$n", count);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                string payload = r.IsDBNull(0) ? "" : r.GetValue(0) is byte[] b ? Encoding.UTF8.GetString(b) : r.GetString(0);
+                string handler = r.IsDBNull(1) ? "" : r.GetString(1);
+                string when = "";
+                try { if (!r.IsDBNull(2)) when = DateTime.FromFileTime(r.GetInt64(2)).ToString("d MMM HH:mm"); } catch { }
+                var item = Parse(payload, handler);
+                if (item == null) { lines.Add($"{when}  ?  (couldn't read)  [{handler}]"); continue; }
+                string verdict = IsImportant(cfg, item) ? "SHOWN   " : "filtered";
+                lines.Add($"{when}  {verdict}  {item.App}: {item.Title}   [{handler}]");
+            }
+            if (lines.Count == 0) lines.Add("Windows hasn't recorded any notifications yet.");
+        }
+        catch (Exception ex) { lines.Add("Couldn't read the notification database: " + ex.Message); }
+        finally
+        {
+            conn?.Dispose();
+            if (tempCopy != null) { try { File.Delete(tempCopy); File.Delete(tempCopy + "-wal"); } catch { } }
+        }
+        return lines;
     }
 
     private static NotificationItem Parse(string xml, string handler)
@@ -199,11 +256,13 @@ public class NotificationService
         return dot >= 0 ? name[(dot + 1)..] : name;
     }
 
-    private bool IsImportant(NotificationItem n)
+    private static bool IsImportant(AppConfig cfg, NotificationItem n)
     {
-        if (_cfg.ShowAllNotifications) return true;
-        if (_cfg.ImportantApps.Any(a => n.App.Contains(a, StringComparison.OrdinalIgnoreCase))) return true;
+        if (cfg.ShowAllNotifications) return true;
+        // Match the friendly name ("Discord") or Windows' raw app id ("com.squirrel.Discord.Discord").
+        if (cfg.ImportantApps.Any(a => n.App.Contains(a, StringComparison.OrdinalIgnoreCase) ||
+                                       n.Handler.Contains(a, StringComparison.OrdinalIgnoreCase))) return true;
         string text = n.Title + " " + n.Body;
-        return _cfg.ImportantKeywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
+        return cfg.ImportantKeywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
     }
 }

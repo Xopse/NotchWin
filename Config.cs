@@ -49,6 +49,12 @@ public class AppConfig
     /// Drag the notch to change it. Top 0 = docked to the top edge.</summary>
     public double PosX { get; set; } = -1;
     public double PosY { get; set; } = 0;
+    /// <summary>"top", "bottom", "left", "right" (docked to that screen edge; sides are vertical) or "float".</summary>
+    public string Dock { get; set; } = "top";
+
+    // ---------- Music ----------
+    /// <summary>"youtube music" or "spotify": what the Music tile opens and where "play ..." goes.</summary>
+    public string MusicService { get; set; } = "youtube music";
 
     // ---------- Weather ----------
     /// <summary>Leave empty to auto-detect from your IP address. Or set e.g. "Pune".</summary>
@@ -109,7 +115,7 @@ public class AppConfig
     public List<ShortcutItem> Shortcuts { get; set; } = new()
     {
         new() { Name = "Files",    Icon = "E8B7", Target = "explorer.exe" },
-        new() { Name = "Music",    Icon = "E8D6", Target = "https://music.youtube.com" },
+        new() { Name = "Music",    Icon = "E8D6", Target = "music:" }, // opens your music app (Settings → Voice & AI)
         new() { Name = "Steam",    Icon = "E7FC", Target = "steam://open/main" },
         new() { Name = "Tasks",    Icon = "E9D9", Target = "taskmgr.exe" },
         new() { Name = "Calc",     Icon = "E8EF", Target = "calc.exe" },

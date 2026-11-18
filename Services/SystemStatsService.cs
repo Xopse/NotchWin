@@ -15,6 +15,7 @@ public class SystemStats
     public double RamUsedGb;
     public double RamTotalGb;
     public double Gpu = -1;     // 0-100, -1 = unknown
+    public double? GpuTemp;     // °C, null = not available on this PC
     public double DownBytesPerSec;
     public double UpBytesPerSec;
     public bool Online;
@@ -37,6 +38,8 @@ public class SystemStatsService
     private DateTime _gpuRefreshed = DateTime.MinValue;
     private bool _gpuUnsupported;
     private long _lastPing = -1;
+    private double? _lastTemp;
+    private DateTime _tempRead = DateTime.MinValue;
 
     public void Start()
     {
@@ -75,6 +78,13 @@ public class SystemStatsService
                 ReadGpu(s);
                 ReadNetwork(s);
                 s.PingMs = _lastPing;
+                // Temperature changes slowly: read it every 2 seconds.
+                if ((DateTime.Now - _tempRead).TotalSeconds >= 2)
+                {
+                    _lastTemp = GpuTemperature.Read();
+                    _tempRead = DateTime.Now;
+                }
+                s.GpuTemp = _lastTemp;
                 Current = s;
             }
             catch (Exception ex) { Log.Write("Stats: " + ex.Message); }

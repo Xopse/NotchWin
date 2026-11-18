@@ -89,7 +89,7 @@ $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\NotchWin'
 New-Item -Path $key -Force | Out-Null
 $sizeKb = [int]((Get-ChildItem $dest -Recurse | Measure-Object -Property Length -Sum).Sum / 1KB)
 Set-ItemProperty $key -Name DisplayName     -Value 'NotchWin'
-Set-ItemProperty $key -Name DisplayVersion  -Value '1.5.0'
+Set-ItemProperty $key -Name DisplayVersion  -Value '1.6.0'
 Set-ItemProperty $key -Name Publisher       -Value 'Me'
 Set-ItemProperty $key -Name DisplayIcon     -Value $exe
 Set-ItemProperty $key -Name InstallLocation -Value $dest

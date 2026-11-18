@@ -117,7 +117,7 @@ public class CommandRouter
         if (play.Success)
         {
             string query = play.Groups[1].Value.Trim();
-            string where = play.Groups[2].Success ? play.Groups[2].Value : "youtube music";
+            string where = play.Groups[2].Success ? play.Groups[2].Value : (_cfg.MusicService ?? "youtube music");
             if (query is "something" or "some music" or "music" or "a song" or "some songs")
                 return await RunActionAsync(new AiAction("resume"));
             return await RunActionAsync(new AiAction("play") { Query = query, Where = where });
@@ -169,6 +169,7 @@ public class CommandRouter
             };
             string where = Get("where").ToLowerInvariant();
             if (where.Length > 0) action.Where = where;
+            else action.Where = "";
             return action;
         }
         catch { return null; }
@@ -188,10 +189,14 @@ public class CommandRouter
 
             case "play":
                 if (string.IsNullOrWhiteSpace(a.Query)) { await _media.PlayAsync(); return "Playing."; }
+                if (string.IsNullOrWhiteSpace(a.Where)) a.Where = _cfg.MusicService ?? "youtube music";
                 if (a.Where.Contains("spotify"))
                 {
-                    Open("spotify:search:" + Uri.EscapeDataString(a.Query));
-                    return $"Searching Spotify for {a.Query}.";
+                    // Spotify doesn't let apps start a song without signing in to its developer API,
+                    // so we open the search; the top result is one click away.
+                    if (SpotifyInstalled()) Open("spotify:search:" + Uri.EscapeDataString(a.Query));
+                    else Open("https://open.spotify.com/search/" + Uri.EscapeDataString(a.Query));
+                    return $"Here's {a.Query} on Spotify.";
                 }
                 bool music = !a.Where.Equals("youtube", StringComparison.OrdinalIgnoreCase);
                 await PlayOnYouTubeAsync(a.Query, music);
@@ -235,10 +240,16 @@ public class CommandRouter
 
     private bool TryOpen(string name)
     {
+        if (name is "music" or "my music" or "music app") { OpenMusicApp(_cfg); return true; }
+
         // 1) Your shortcuts from config.json
         var sc = _cfg.Shortcuts.FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
               ?? _cfg.Shortcuts.FirstOrDefault(s => s.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
-        if (sc != null) return Open(sc.Target, sc.Args);
+        if (sc != null)
+        {
+            if (IsMusicTile(sc)) { OpenMusicApp(_cfg); return true; }
+            return Open(sc.Target, sc.Args);
+        }
 
         // 2) Anything in the Start menu
         var lnk = FindStartMenuShortcut(name);
@@ -283,6 +294,27 @@ public class CommandRouter
             ?? candidates.FirstOrDefault(p => Clean(p).Contains(n, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>The "Music" tile follows your music-app setting (older configs pointed it straight at YouTube Music).</summary>
+    public static bool IsMusicTile(ShortcutItem s) =>
+        s.Target.Equals("music:", StringComparison.OrdinalIgnoreCase) ||
+        (s.Name.Equals("Music", StringComparison.OrdinalIgnoreCase) && s.Target.Contains("music.youtube.com", StringComparison.OrdinalIgnoreCase));
+
+    public static bool SpotifyInstalled()
+    {
+        try { using var k = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey("spotify"); return k != null; }
+        catch { return false; }
+    }
+
+    /// <summary>Opens the music app you picked in Settings (Spotify app, Spotify web, or YouTube Music).</summary>
+    public static void OpenMusicApp(AppConfig cfg)
+    {
+        if ((cfg.MusicService ?? "").Contains("spotify", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!(SpotifyInstalled() && Open("spotify:"))) Open("https://open.spotify.com");
+        }
+        else Open("https://music.youtube.com");
+    }
+
     public static bool Open(string target, string args = "")
     {
         try
@@ -315,7 +347,7 @@ public class CommandRouter
             "{\"action\":\"open\",\"target\":\"<app or website name>\"}\n" +
             "{\"action\":\"search\",\"query\":\"<web search>\"}\n" +
             "{\"action\":\"weather\"} {\"action\":\"time\"}\n" +
-            "For play, use \"youtube music\" unless they name YouTube or Spotify, and put the song name in its normal spelling " +
+            "For play, leave \"where\" empty unless they name YouTube, YouTube Music or Spotify, and put the song name in its normal spelling " +
             "(e.g. \"i pad\" -> \"iPad\"). Never pretend you did something without sending the JSON.\n\n" +
             "Otherwise, answer the question. Your answer is shown in a tiny box and read aloud, so use one to three short " +
             "sentences, plain text only: no markdown, lists or emoji.";

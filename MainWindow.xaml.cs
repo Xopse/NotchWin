@@ -52,7 +52,6 @@ public partial class MainWindow : Window
     private IntPtr _hwnd;
     private Mode _mode = Mode.Compact;
     private bool _hovering, _hidden, _wasStreaming, _wasRecording;
-    private double _lastCompactWidth;
     private Activity _activity;
     private DateTime _activityUntil;
     private readonly Queue<Activity> _queue = new();
@@ -73,10 +72,8 @@ public partial class MainWindow : Window
     private LinearGradientBrush _bgBrush;   // kept so colour changes can animate (Vibe theme)
 
     // Position / dragging
-    private bool _docked = true;          // touching the top edge = notch shape; anywhere else = floating pill
     private bool _mouseDown, _dragging;
     private Native.POINT _dragStartCursor;
-    private double _dragStartLeft, _dragStartTop;
     private bool _clickThrough;
     private readonly DispatcherTimer _hitTest = new() { Interval = TimeSpan.FromMilliseconds(60) };
 
@@ -103,6 +100,12 @@ public partial class MainWindow : Window
         _hoverIn.Tick += (s, e) => { _hoverIn.Stop(); _hovering = true; UpdateMode(); };
         _hoverOut.Tick += (s, e) => { _hoverOut.Stop(); _hovering = false; UpdateMode(); };
         _tick.Tick += (s, e) => OnTick();
+        BigArt.MouseLeftButtonUp += (s, e) =>
+        {
+            if (_mediaInfo != null) return;
+            e.Handled = true;
+            CommandRouter.OpenMusicApp(_cfg); // nothing playing: the empty cover opens your music app
+        };
         _hitTest.Tick += (s, e) => UpdateClickThrough();
         // Give unused memory back to Windows a few seconds after the notch closes.
         _trim.Tick += (s, e) => { _trim.Stop(); if (_mode != Mode.Expanded) Native.TrimMemory(); };
@@ -183,42 +186,116 @@ public partial class MainWindow : Window
     }
 
     // =====================================================================
-    //  Position: drag it anywhere. Near the top edge it docks as a notch, elsewhere it floats as a pill.
+    //  Position. Drag it anywhere:
+    //   • drop it on the top or bottom edge of a screen → docks there as a notch
+    //   • drop it on the left or right edge → docks there and turns vertical
+    //   • drop it anywhere else → floats as a pill
+    //  Whatever it opens (pop-ups, the dashboard) always grows towards the free space, so nothing gets cut off.
     // =====================================================================
+
+    private string _dock = "top";        // top, bottom, left, right, float
+    private bool Vertical => !_dragging && (_dock == "left" || _dock == "right");
+    private double _ax, _ay;             // where the small pill's centre is (screen units)
+    private Rect _mon, _work;            // the monitor it's on, and that monitor minus the taskbar
+    private bool _growUp;                // floating in the lower half → opens upwards
+    private double _lastCompactW, _lastCompactH;
 
     private void PositionWindow()
     {
+        _dock = (_cfg.Dock ?? "top").ToLowerInvariant();
+        if (_dock is not ("top" or "bottom" or "left" or "right" or "float")) _dock = "top";
         double cx = _cfg.PosX >= 0 ? _cfg.PosX : SystemParameters.PrimaryScreenWidth / 2;
-        double top = _cfg.PosY;
-
-        // Keep it on screen with room for the expanded view.
-        double vl = SystemParameters.VirtualScreenLeft, vt = SystemParameters.VirtualScreenTop;
-        double vr = vl + SystemParameters.VirtualScreenWidth, vb = vt + SystemParameters.VirtualScreenHeight;
-        cx = Math.Clamp(cx, vl + ExpandedWidth / 2 + 4, Math.Max(vl + ExpandedWidth / 2 + 4, vr - ExpandedWidth / 2 - 4));
-        top = Math.Clamp(top, vt, Math.Max(vt, vb - ExpandedHeight - 30));
-
-        double monitorTop = MonitorTopAt(cx, top + 5);
-        _docked = top - monitorTop < 1;
-        if (_docked) top = monitorTop;
-
-        Left = cx - Width / 2;
-        Top = top;
-        ApplyMode(force: true);
+        double cy = _cfg.PosY > 0 ? _cfg.PosY : SystemParameters.PrimaryScreenHeight / 2;
+        PlaceAt(cx, cy, instant: false);
     }
 
-    /// <summary>Top edge (in WPF units) of the monitor under a point.</summary>
-    private double MonitorTopAt(double xDip, double yDip)
+    /// <summary>Puts the small pill's centre at (cx, cy), snapped to the docked edge, and moves the window around it.</summary>
+    private void PlaceAt(double cx, double cy, bool instant)
+    {
+        (_mon, _work) = MonitorAt(cx, cy);
+        var (cw, ch) = CompactSize();
+
+        switch (_dock)
+        {
+            case "top": cy = _mon.Top + ch / 2; break;
+            case "bottom": cy = _work.Bottom - ch / 2; break;
+            case "left": cx = _work.Left + cw / 2; break;
+            case "right": cx = _work.Right - cw / 2; break;
+        }
+        cx = Math.Clamp(cx, _mon.Left + cw / 2, Math.Max(_mon.Left + cw / 2, _mon.Right - cw / 2));
+        cy = Math.Clamp(cy, _mon.Top + ch / 2, Math.Max(_mon.Top + ch / 2, _mon.Bottom - ch / 2));
+        _ax = cx;
+        _ay = cy;
+        _growUp = _dock == "bottom" || (_dock == "float" && cy > (_mon.Top + _mon.Bottom) / 2);
+
+        double w = Width, h = Height, left, top;
+        switch (_dock)
+        {
+            case "left": left = _work.Left; top = cy - h / 2; break;
+            case "right": left = _work.Right - w; top = cy - h / 2; break;
+            case "top": left = cx - w / 2; top = _mon.Top; break;
+            case "bottom": left = cx - w / 2; top = _work.Bottom - h; break;
+            default: left = cx - w / 2; top = _growUp ? cy + ch / 2 + 24 - h : cy - ch / 2 - 12; break;
+        }
+        // Keep the whole window on this screen, so everything it opens stays visible.
+        Left = Math.Clamp(left, _mon.Left, Math.Max(_mon.Left, _mon.Right - w));
+        Top = Math.Clamp(top, _mon.Top, Math.Max(_mon.Top, _mon.Bottom - h));
+        ApplyMode(force: true, instant: instant);
+    }
+
+    /// <summary>Where the pill sits inside its (bigger, invisible) window for a given size.</summary>
+    private Thickness MarginFor(double w, double h)
+    {
+        double W = Width, H = Height;
+        double x = _ax - Left, y = _ay - Top; // anchor in window coordinates
+        var (_, ch) = CompactSize();
+        double l, t;
+        switch (_dock)
+        {
+            case "left": l = 0; t = y - h / 2; break;
+            case "right": l = W - w; t = y - h / 2; break;
+            case "top": l = x - w / 2; t = y - ch / 2; break;
+            case "bottom": l = x - w / 2; t = y + ch / 2 - h; break;
+            default:
+                l = x - w / 2;
+                t = _growUp ? y + ch / 2 - h : y - ch / 2;
+                break;
+        }
+        return new Thickness(Math.Clamp(l, 0, Math.Max(0, W - w)), Math.Clamp(t, 0, Math.Max(0, H - h)), 0, 0);
+    }
+
+    /// <summary>The monitor (and its area without the taskbar) under a point, in WPF units.</summary>
+    private (Rect mon, Rect work) MonitorAt(double xDip, double yDip)
     {
         try
         {
             var dpi = VisualTreeHelper.GetDpi(this);
             var pt = new Native.POINT { X = (int)(xDip * dpi.DpiScaleX), Y = (int)(yDip * dpi.DpiScaleY) };
-            var mon = Native.MonitorFromPoint(pt, Native.MONITOR_DEFAULTTONEAREST);
+            var handle = Native.MonitorFromPoint(pt, Native.MONITOR_DEFAULTTONEAREST);
             var mi = new Native.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<Native.MONITORINFO>() };
-            if (Native.GetMonitorInfo(mon, ref mi)) return mi.rcMonitor.Top / dpi.DpiScaleY;
+            if (Native.GetMonitorInfo(handle, ref mi))
+            {
+                Rect R(Native.RECT r) => new(r.Left / dpi.DpiScaleX, r.Top / dpi.DpiScaleY,
+                                             (r.Right - r.Left) / dpi.DpiScaleX, (r.Bottom - r.Top) / dpi.DpiScaleY);
+                return (R(mi.rcMonitor), R(mi.rcWork));
+            }
         }
         catch { }
-        return 0;
+        var all = new Rect(0, 0, SystemParameters.PrimaryScreenWidth, SystemParameters.PrimaryScreenHeight);
+        return (all, SystemParameters.WorkArea);
+    }
+
+    /// <summary>Size of the small pill: wide when horizontal, tall when docked to a side.</summary>
+    private (double w, double h) CompactSize() =>
+        Vertical ? (CompactHeight + 4, VerticalLengthNow()) : (CompactWidthNow(), CompactHeight);
+
+    private double VerticalLengthNow()
+    {
+        double len = 118;
+        if (_cfg.ShowWeatherInPill && _weather?.Current != null) len += 34;
+        if (_stream != null && (_stream.IsStreaming || _stream.IsRecording || _stream.MicInUse || _stream.CameraInUse)) len += 18;
+        if (_unread > 0) len += 26;
+        return len;
     }
 
     private void Pill_MouseDown(object sender, MouseButtonEventArgs e)
@@ -226,8 +303,6 @@ public partial class MainWindow : Window
         _mouseDown = true;
         _dragging = false;
         Native.GetCursorPos(out _dragStartCursor);
-        _dragStartLeft = Left;
-        _dragStartTop = Top;
         // Don't capture the mouse yet: a plain click must still reach the notification cards etc.
     }
 
@@ -238,7 +313,7 @@ public partial class MainWindow : Window
         {
             // The button was released somewhere we didn't see (e.g. on a card that handled the click).
             _mouseDown = false;
-            if (_dragging) { _dragging = false; Pill.ReleaseMouseCapture(); }
+            if (_dragging) { _dragging = false; Pill.ReleaseMouseCapture(); PositionWindow(); }
             return;
         }
         Native.GetCursorPos(out var cur);
@@ -250,22 +325,14 @@ public partial class MainWindow : Window
             _hoverIn.Stop();
             _hoverOut.Stop();
             _hovering = false;
-            Pill.CaptureMouse(); // now follow the mouse even if it outruns the pill
-            UpdateMode(); // shrink to the small pill while you carry it
+            _dock = "float";      // carried around as a small floating pill
+            Pill.CaptureMouse();  // follow the mouse even if it outruns the pill
+            UpdateMode();
         }
 
+        // The pill follows the cursor.
         var dpi = VisualTreeHelper.GetDpi(this);
-        Left = _dragStartLeft + dx / dpi.DpiScaleX;
-        Top = _dragStartTop + dy / dpi.DpiScaleY;
-
-        // Preview the shape: snaps to a notch when you bring it to the top edge.
-        double cx = Left + Width / 2;
-        bool dock = Top - MonitorTopAt(cx, Top + 5) < 28;
-        if (dock != _docked)
-        {
-            _docked = dock;
-            ApplyMode(force: true);
-        }
+        PlaceAt(cur.X / dpi.DpiScaleX, cur.Y / dpi.DpiScaleY, instant: true);
     }
 
     private void Pill_MouseUp(object sender, MouseButtonEventArgs e)
@@ -277,10 +344,19 @@ public partial class MainWindow : Window
         if (_dragging)
         {
             _dragging = false;
-            double cx = Left + Width / 2;
-            double monitorTop = MonitorTopAt(cx, Top + 5);
-            _cfg.PosX = Math.Round(cx);
-            _cfg.PosY = Top - monitorTop < 28 ? monitorTop : Math.Round(Top);
+            // Close to an edge? Dock there. Otherwise stay floating where it was dropped.
+            var (cw, ch) = (CompactWidthNow(), CompactHeight);
+            var gaps = new (string dock, double gap)[]
+            {
+                ("top", _ay - ch / 2 - _mon.Top),
+                ("bottom", _work.Bottom - (_ay + ch / 2)),
+                ("left", _ax - cw / 2 - _work.Left),
+                ("right", _work.Right - (_ax + cw / 2)),
+            };
+            var nearest = gaps.OrderBy(g => g.gap).First();
+            _cfg.Dock = nearest.gap < 40 ? nearest.dock : "float";
+            _cfg.PosX = Math.Round(_ax);
+            _cfg.PosY = Math.Round(_ay);
             _cfg.Save();
             PositionWindow();
             return;
@@ -293,6 +369,7 @@ public partial class MainWindow : Window
 
     private void ResetPosition()
     {
+        _cfg.Dock = "top";
         _cfg.PosX = -1;
         _cfg.PosY = 0;
         _cfg.Save();
@@ -326,7 +403,15 @@ public partial class MainWindow : Window
         Native.SetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE, new IntPtr(ex));
     }
 
-    private CornerRadius Corners(double r) => _docked ? new CornerRadius(0, 0, r, r) : new CornerRadius(r);
+    /// <summary>Rounded on the open sides, flat against the screen edge it's docked to.</summary>
+    private CornerRadius Corners(double r) => _dock switch
+    {
+        "top" => new CornerRadius(0, 0, r, r),
+        "bottom" => new CornerRadius(r, r, 0, 0),
+        "left" => new CornerRadius(0, r, r, 0),
+        "right" => new CornerRadius(r, 0, 0, r),
+        _ => new CornerRadius(r),
+    };
 
     private void ApplyStartup()
     {
@@ -490,12 +575,22 @@ public partial class MainWindow : Window
         CompactIcon.Visibility = CompactArt.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
         CompactIcon.Text = showMedia ? (m.IsVideo ? "\uE714" : "\uE8D6") : "\uE823";
         // Animations cost a little CPU, so only run them while you can actually see them.
-        SetEqualizer(showMedia && _cfg.ShowEqualizer && _mode == Mode.Compact && !_hidden);
+        SetEqualizer(showMedia && _cfg.ShowEqualizer && _mode == Mode.Compact && !_hidden && !Vertical);
 
-        if (_mode == Mode.Compact)
+        // Vertical pill (docked to a side): time stacked, art on top, weather and dots below.
+        VHour.Text = now.ToString("%h");
+        VMinute.Text = now.ToString("mm");
+        VAmPm.Text = now.ToString("tt");
+        VArt.Visibility = CompactArt.Visibility;
+        VIcon.Visibility = CompactIcon.Visibility;
+        VIcon.Text = CompactIcon.Text;
+        VWeather.Text = _cfg.ShowWeatherInPill && _weather?.Current != null ? $"{_weather.Current.Icon}\n{Math.Round(_weather.Current.Temp)}°" : "";
+        VWeather.Visibility = VWeather.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (_mode == Mode.Compact && !_dragging)
         {
-            double w = CompactWidthNow();
-            if (Math.Abs(w - _lastCompactWidth) > 0.5) AnimateSize(w, CompactHeight);
+            var (w, h) = CompactSize();
+            if (Math.Abs(w - _lastCompactW) > 0.5 || Math.Abs(h - _lastCompactH) > 0.5) AnimateSize(w, h);
         }
     }
 
@@ -530,6 +625,9 @@ public partial class MainWindow : Window
         RecBadge.Visibility = rec ? Visibility.Visible : Visibility.Collapsed;
         MicDot.Visibility = _stream.MicInUse ? Visibility.Visible : Visibility.Collapsed;
         CamDot.Visibility = _stream.CameraInUse ? Visibility.Visible : Visibility.Collapsed;
+        VLive.Visibility = LiveDot.Visibility;
+        VMic.Visibility = MicDot.Visibility;
+        VCam.Visibility = CamDot.Visibility;
         MicBadge.Visibility = _stream.MicInUse ? Visibility.Visible : Visibility.Collapsed;
         MicBadgeText.Text = "Mic · " + _stream.MicApp;
 
@@ -552,9 +650,9 @@ public partial class MainWindow : Window
         if (s.Gpu >= 0)
         {
             SetBar(GpuBar, GpuTrack, s.Gpu, _theme.Accent3);
-            GpuText.Text = $"{s.Gpu:0}%";
+            GpuText.Text = s.GpuTemp != null ? $"{s.Gpu:0}% · {s.GpuTemp:0}°" : $"{s.Gpu:0}%";
         }
-        else GpuText.Text = "n/a";
+        else GpuText.Text = s.GpuTemp != null ? $"{s.GpuTemp:0}°C" : "n/a";
 
         NetIcon.Text = !s.Online ? "\uE7BA" : s.NetworkName == "Wi-Fi" ? "\uE701" : "\uE839";
         NetSpeed.Text = $"↓ {SystemStatsService.FormatSpeed(s.DownBytesPerSec)}   ↑ {SystemStatsService.FormatSpeed(s.UpBytesPerSec)}";
@@ -625,6 +723,7 @@ public partial class MainWindow : Window
             {
                 BigArt.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
                 CompactArt.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+                VArt.Background = CompactArt.Background;
                 BigArtPlaceholder.Visibility = Visibility.Collapsed;
             }
             else
@@ -859,9 +958,11 @@ public partial class MainWindow : Window
         string count = _unread > 9 ? "9+" : _unread.ToString();
         BellPanel.Visibility = _unread > 0 ? Visibility.Visible : Visibility.Collapsed;
         BellCount.Text = count;
+        VBell.Visibility = BellPanel.Visibility;
+        VBellCount.Text = count;
         HeaderBadge.Visibility = _unread > 0 ? Visibility.Visible : Visibility.Collapsed;
         HeaderBadgeCount.Text = count;
-        if (_mode == Mode.Compact) AnimateSize(CompactWidthNow(), CompactHeight);
+        if (_mode == Mode.Compact) { var (w, h) = CompactSize(); AnimateSize(w, h); }
     }
 
     /// <summary>A little "ding" wiggle as the notification lands in the bell.</summary>
@@ -994,38 +1095,39 @@ public partial class MainWindow : Window
         ApplyMode(force);
     }
 
-    private void ApplyMode(bool force = false)
+    private void ApplyMode(bool force = false, bool instant = false)
     {
         switch (_mode)
         {
             case Mode.Compact:
-                ShowView(CompactView);
-                Pill.CornerRadius = Corners(CompactHeight / 2);
+                ShowView(Vertical ? CompactViewV : CompactView);
+                var (cw, ch) = CompactSize();
+                Pill.CornerRadius = Corners(Math.Min(cw, ch) / 2);
                 _trim.Interval = TimeSpan.FromSeconds(8);
                 _trim.Stop();
                 _trim.Start();
-                AnimateSize(CompactWidthNow(), CompactHeight);
+                AnimateSize(cw, ch, instant);
                 break;
 
             case Mode.Activity:
                 ShowView(ActivityView);
                 bool tall = (_activity?.Subtitle?.Length ?? 0) > 52;
                 Pill.CornerRadius = Corners(26);
-                AnimateSize(ActivityWidth, tall ? 96 : 66);
+                AnimateSize(ActivityWidth, tall ? 96 : 66, instant);
                 break;
 
             case Mode.Expanded:
                 RefreshExpanded(DateTime.Now); // fresh numbers before it opens
                 ShowView(ExpandedView);
                 Pill.CornerRadius = Corners(32);
-                AnimateSize(ExpandedWidth, ExpandedHeight);
+                AnimateSize(ExpandedWidth, ExpandedHeight, instant);
                 break;
         }
     }
 
     private void ShowView(FrameworkElement view)
     {
-        foreach (var v in new FrameworkElement[] { CompactView, ActivityView, ExpandedView })
+        foreach (var v in new FrameworkElement[] { CompactView, CompactViewV, ActivityView, ExpandedView })
         {
             if (ReferenceEquals(v, view))
             {
@@ -1045,13 +1147,27 @@ public partial class MainWindow : Window
         }
     }
 
-    private void AnimateSize(double w, double h)
+    /// <summary>Grows/shrinks the pill. It also slides inside its window, so it always opens towards free space.</summary>
+    private void AnimateSize(double w, double h, bool instant = false)
     {
-        if (_mode == Mode.Compact) _lastCompactWidth = w;
+        if (_mode == Mode.Compact) { _lastCompactW = w; _lastCompactH = h; }
+        var margin = MarginFor(w, h);
+        if (instant)
+        {
+            Pill.BeginAnimation(WidthProperty, null);
+            Pill.BeginAnimation(HeightProperty, null);
+            Pill.BeginAnimation(MarginProperty, null);
+            Pill.Width = w;
+            Pill.Height = h;
+            Pill.Margin = margin;
+            return;
+        }
         var ease = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.22 };
         var dur = TimeSpan.FromMilliseconds(420);
         Pill.BeginAnimation(WidthProperty, new DoubleAnimation(w, dur) { EasingFunction = ease });
         Pill.BeginAnimation(HeightProperty, new DoubleAnimation(h, dur) { EasingFunction = ease });
+        // The position moves with exactly the same timing, so the docked edge / anchor stays put.
+        Pill.BeginAnimation(MarginProperty, new ThicknessAnimation(margin, dur) { EasingFunction = ease });
     }
 
     private void Pill_MouseEnter(object sender, MouseEventArgs e)
@@ -1077,7 +1193,10 @@ public partial class MainWindow : Window
         foreach (var s in _cfg.Shortcuts)
         {
             var item = s;
-            ShortcutsBar.Items.Add(MakeTile(item.Icon, item.Name, () => CommandRouter.Open(item.Target, item.Args)));
+            if (CommandRouter.IsMusicTile(item))
+                ShortcutsBar.Items.Add(MakeTile(item.Icon, item.Name, () => CommandRouter.OpenMusicApp(_cfg)));
+            else
+                ShortcutsBar.Items.Add(MakeTile(item.Icon, item.Name, () => CommandRouter.Open(item.Target, item.Args)));
         }
         ShortcutsBar.Items.Add(MakeTile("E720", "Ask", () => _voice?.ListenNow()));
         ShortcutsBar.Items.Add(MakeTile("E713", "Notch", OpenSettings));

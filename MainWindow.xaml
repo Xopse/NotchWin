@@ -92,7 +92,8 @@
 
     <Grid x:Name="Root">
         <!-- Soft shadow under the notch -->
-        <Border x:Name="Shadow" HorizontalAlignment="Center" VerticalAlignment="Top" Background="Black"
+        <Border x:Name="Shadow" HorizontalAlignment="Left" VerticalAlignment="Top" Background="Black"
+                Margin="{Binding Margin, ElementName=Pill}"
                 Width="{Binding ActualWidth, ElementName=Pill}" Height="{Binding ActualHeight, ElementName=Pill}"
                 CornerRadius="{Binding CornerRadius, ElementName=Pill}" IsHitTestVisible="False">
             <Border.Effect>
@@ -101,7 +102,7 @@
         </Border>
 
         <!-- The notch itself -->
-        <Border x:Name="Pill" HorizontalAlignment="Center" VerticalAlignment="Top"
+        <Border x:Name="Pill" HorizontalAlignment="Left" VerticalAlignment="Top"
                 Width="210" Height="34" Background="{DynamicResource NotchBg}" BorderBrush="{DynamicResource NotchBorder}" CornerRadius="0,0,17,17"
                 MouseEnter="Pill_MouseEnter" MouseLeave="Pill_MouseLeave"
                 MouseLeftButtonDown="Pill_MouseDown" MouseMove="Pill_MouseMove" MouseLeftButtonUp="Pill_MouseUp">
@@ -156,6 +157,32 @@
                         <Ellipse x:Name="LiveDot" Width="8" Height="8" Margin="4,0,0,0" Fill="#FFFF3B30" Visibility="Collapsed" ToolTip="Live / recording" />
                     </StackPanel>
                 </Grid>
+
+                <!-- ========== COMPACT, VERTICAL (docked to the left/right edge) ========== -->
+                <StackPanel x:Name="CompactViewV" HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Visibility="Collapsed" Opacity="0">
+                    <Grid HorizontalAlignment="Center" Margin="0,0,0,8">
+                        <TextBlock x:Name="VIcon" FontFamily="{StaticResource Icons}" Text="&#xE823;" FontSize="12"
+                                   Foreground="{DynamicResource FgDim}" HorizontalAlignment="Center" />
+                        <Border x:Name="VArt" Width="22" Height="22" CornerRadius="6" Background="{DynamicResource Track}" Visibility="Collapsed" />
+                    </Grid>
+                    <TextBlock x:Name="VHour" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="VMinute" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" Foreground="{DynamicResource FgSoft}" />
+                    <TextBlock x:Name="VAmPm" FontSize="9.5" HorizontalAlignment="Center" Foreground="{DynamicResource FgDim}" />
+                    <TextBlock x:Name="VWeather" FontSize="11" HorizontalAlignment="Center" Margin="0,8,0,0" Foreground="{DynamicResource FgSoft}" />
+                    <StackPanel x:Name="VDots" HorizontalAlignment="Center" Margin="0,8,0,0">
+                        <Ellipse x:Name="VLive" Width="8" Height="8" Margin="0,2" Fill="#FFFF3B30" Visibility="Collapsed" />
+                        <Ellipse x:Name="VMic" Width="7" Height="7" Margin="0,2" Fill="#FFFF9F0A" Visibility="Collapsed" />
+                        <Ellipse x:Name="VCam" Width="7" Height="7" Margin="0,2" Fill="#FF30D158" Visibility="Collapsed" />
+                    </StackPanel>
+                    <Grid x:Name="VBell" HorizontalAlignment="Center" Margin="0,8,0,0" Visibility="Collapsed">
+                        <TextBlock FontFamily="{StaticResource Icons}" Text="&#xEA8F;" FontSize="13" HorizontalAlignment="Center" />
+                        <Border Background="#FFFF3B30" CornerRadius="6" MinWidth="12" Height="12" Padding="3,0"
+                                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-5,-9,0">
+                            <TextBlock x:Name="VBellCount" Foreground="White" FontSize="8.5" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </Grid>
+                </StackPanel>
 
                 <!-- ========== ACTIVITY (game launched, notification, voice...) ========== -->
                 <Grid x:Name="ActivityView" Width="410" HorizontalAlignment="Center" VerticalAlignment="Top"
@@ -288,7 +315,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="38" />
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="58" />
+                                    <ColumnDefinition Width="76" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="CPU" Style="{StaticResource Dim}" VerticalAlignment="Center" />
                                 <Grid x:Name="CpuTrack" Grid.Column="1" Height="6" VerticalAlignment="Center">
@@ -302,7 +329,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="38" />
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="58" />
+                                    <ColumnDefinition Width="76" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="RAM" Style="{StaticResource Dim}" VerticalAlignment="Center" />
                                 <Grid x:Name="RamTrack" Grid.Column="1" Height="6" VerticalAlignment="Center">
@@ -316,7 +343,7 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="38" />
                                     <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="58" />
+                                    <ColumnDefinition Width="76" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="GPU" Style="{StaticResource Dim}" VerticalAlignment="Center" />
                                 <Grid x:Name="GpuTrack" Grid.Column="1" Height="6" VerticalAlignment="Center">

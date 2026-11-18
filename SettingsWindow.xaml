@@ -61,7 +61,7 @@
                                    Text="With the first option the notch stays on top of every app, including fullscreen YouTube, and only steps aside for games. If a game isn't detected, right-click the notch while the game is in front and choose “Treat … as a game”." />
 
                         <TextBlock Text="Position" Style="{StaticResource H2}" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Drag the notch with the mouse to move it anywhere. Drop it at the top edge of a screen and it docks as a notch; drop it anywhere else and it floats as a pill. Only the notch itself catches clicks, so whatever is underneath it still works." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Drag the notch with the mouse to move it anywhere. Drop it on the top or bottom edge of a screen and it docks there; drop it on the left or right edge and it turns vertical; drop it anywhere else and it floats. It always opens towards the free side of the screen. Only the notch itself catches clicks, so whatever is underneath still works." />
                         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                             <Button Content="Move back to top centre" Click="ResetPosition_Click" />
                             <TextBlock x:Name="PositionText" Margin="12,0,0,0" VerticalAlignment="Center" Opacity="0.65" FontSize="12" />
@@ -103,6 +103,13 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Style="{StaticResource Page}">
                         <TextBlock Text="Voice &amp; AI" Style="{StaticResource H1}" />
+
+                        <TextBlock Text="Music app" Style="{StaticResource H2}" />
+                        <ComboBox x:Name="MusicBox" Width="360" HorizontalAlignment="Left">
+                            <ComboBoxItem Tag="youtube music" Content="YouTube Music" />
+                            <ComboBoxItem Tag="spotify" Content="Spotify" />
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource Hint}" Text="Used by the Music tile, the empty cover in the expanded notch, and “play …” voice commands. You can still say “… on YouTube” or “… on Spotify” to pick one. With Spotify the song opens in search, one click away: Spotify doesn't let other apps start songs without a developer login." />
 
                         <TextBlock Text="Voice assistant" Style="{StaticResource H2}" />
                         <ComboBox x:Name="VoiceModeBox" Width="420" HorizontalAlignment="Left">
@@ -198,6 +205,13 @@
                         <TextBlock Text="Important words (comma separated)" Style="{StaticResource Label}" />
                         <TextBox x:Name="KeywordsBox" TextWrapping="Wrap" AcceptsReturn="False" Width="560" HorizontalAlignment="Left" />
                         <TextBlock Style="{StaticResource Hint}" Text="Any notification whose text contains one of these words is shown, whatever app sent it." />
+
+                        <TextBlock Text="Something not popping up?" Style="{StaticResource H2}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="This lists the last notifications Windows itself recorded, and whether the notch shows or filters each one. If an app (like Discord) isn't in the list at all, Windows never received a notification from it, so check that app's own notification settings." />
+                        <Button Content="Check recent notifications" HorizontalAlignment="Left" Margin="0,10,0,0" Click="CheckNotifs_Click" />
+                        <TextBox x:Name="NotifReport" Margin="0,10,0,0" Height="180" Width="560" HorizontalAlignment="Left" IsReadOnly="True"
+                                 FontFamily="Cascadia Mono, Consolas" FontSize="11.5" TextWrapping="NoWrap"
+                                 HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Visibility="Collapsed" />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

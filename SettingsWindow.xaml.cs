@@ -70,9 +70,15 @@ public partial class SettingsWindow : Window
 
     private void UpdatePositionText()
     {
-        PositionText.Text = _resetPosition || _cfg.PosX < 0
-            ? (_cfg.PosY <= 0 || _resetPosition ? "Currently: docked at top centre" : "Currently: custom")
-            : (_cfg.PosY <= 0 ? "Currently: docked at the top, moved sideways" : "Currently: floating");
+        string dock = _resetPosition ? "top" : (_cfg.Dock ?? "top");
+        PositionText.Text = "Currently: " + dock switch
+        {
+            "top" => _resetPosition || _cfg.PosX < 0 ? "docked at top centre" : "docked to the top edge",
+            "bottom" => "docked to the bottom edge",
+            "left" => "docked to the left edge (vertical)",
+            "right" => "docked to the right edge (vertical)",
+            _ => "floating",
+        };
     }
 
     private void ResetPosition_Click(object sender, RoutedEventArgs e)
@@ -99,6 +105,7 @@ public partial class SettingsWindow : Window
         StartupBox.IsChecked = _cfg.RunOnStartup;
 
         // Voice & AI
+        SelectByTag(MusicBox, (_cfg.MusicService ?? "").Contains("spotify") ? "spotify" : "youtube music", "youtube music");
         SelectByTag(VoiceModeBox, _cfg.VoiceMode, "WakeWord");
         WakeWordsBox.Text = string.Join(", ", _cfg.WakeWords);
         SelectByTag(VoskBox, _cfg.VoskModelUrl == AppConfig.VoskUs ? "us" : "in", "in");
@@ -142,6 +149,7 @@ public partial class SettingsWindow : Window
         c.ShowSongPopups = SongPopupBox.IsChecked == true;
         c.RunOnStartup = StartupBox.IsChecked == true;
 
+        c.MusicService = TagOf(MusicBox, "youtube music");
         c.VoiceMode = TagOf(VoiceModeBox, "WakeWord");
         c.WakeWords = SplitList(WakeWordsBox.Text, ',').Select(w => w.ToLowerInvariant()).ToList();
         if (c.WakeWords.Count == 0) c.WakeWords.Add("computer");
@@ -160,13 +168,14 @@ public partial class SettingsWindow : Window
         c.ShowAllNotifications = AllNotifBox.IsChecked == true;
         c.NotificationPopupSeconds = PopupSlider.Value;
         c.NotificationPopupSecondsWhileWatching = PopupWatchSlider.Value;
-        if (_resetPosition) { c.PosX = -1; c.PosY = 0; }
+        if (_resetPosition) { c.PosX = -1; c.PosY = 0; c.Dock = "top"; }
         else
         {
             // You may have dragged the notch while this window was open: keep where it is now.
             var current = AppConfig.Load();
             c.PosX = current.PosX;
             c.PosY = current.PosY;
+            c.Dock = current.Dock;
         }
         c.ImportantApps = SplitList(AppsBox.Text, ',');
         c.ImportantKeywords = SplitList(KeywordsBox.Text, ',');
@@ -274,6 +283,16 @@ public partial class SettingsWindow : Window
             kv.Value.BorderBrush = kv.Key == _themeId
                 ? new SolidColorBrush(Color.FromRgb(0x60, 0xA5, 0xFA))
                 : Brushes.Transparent;
+    }
+
+    private async void CheckNotifs_Click(object sender, RoutedEventArgs e)
+    {
+        NotifReport.Visibility = Visibility.Visible;
+        NotifReport.Text = "Reading...";
+        var cfg = new AppConfig();
+        ReadValues(cfg); // use what's on screen right now, even before saving
+        var lines = await Task.Run(() => Services.NotificationService.Diagnose(cfg));
+        NotifReport.Text = string.Join(Environment.NewLine, lines);
     }
 
     private void Quit_Click(object sender, RoutedEventArgs e)

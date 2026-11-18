@@ -25,11 +25,12 @@
 | 🔔 **Notifications** | Important ones pop up briefly, then tuck into a bell. Click one to open its app |
 | 🎮 **Game aware** | Announces games as they launch and gets out of the way while you play |
 | 🔴 **Streaming** | A LIVE / REC dot from OBS, plus mic and camera in-use dots |
-| 📊 **System** | CPU, RAM, GPU, network speed and ping |
+| 📊 **System** | CPU, RAM, GPU usage and **GPU temperature**, network speed and ping |
 | 🌦️ **Weather** | Shows the local weather automatically, no key needed |
 | 🎙️ **Voice assistant** | "computer, play blinding lights": offline speech recognition, plus optional AI (Groq has a free plan) |
 | 🎨 **11 themes** | Midnight, Nightfall, Aurora, Sunset, Ocean, Neon, Sakura, Ember, Glass, Daylight, and **Vibe**, which matches your album art |
-| 🖱️ **Movable** | Drag it anywhere. It docks as a notch at the top edge or floats as a pill elsewhere |
+| 🖱️ **Movable** | Drag it anywhere: it docks to the top or bottom edge, turns **vertical** on the left or right edge, or floats. It always opens towards the free side, so nothing gets cut off |
+| 🎧 **Your music app** | Pick Spotify or YouTube Music for the Music tile and "play …" |
 | 🪶 **Lightweight** | Stats are only measured while it's open, animations only run while visible, and spare memory is handed back |
 
 ## Install
@@ -61,7 +62,7 @@ To update, run the installer from the new version. Your settings are kept.
 | Do this | Get this |
 |---|---|
 | **Hover** over the notch | It expands into a dashboard |
-| **Drag** it | Moves it. Drop it at the top edge to dock it |
+| **Drag** it | Moves it. Drop it on a screen edge to dock it there (sides turn vertical) |
 | **Right-click** it | Settings, Ask assistant, *Treat "app.exe" as a game*, Move back to top centre, Restart, Quit |
 | **Click a pop-up** | Dismisses it |
 | **Click the bell** (in the expanded view) | Shows your notifications |
@@ -74,7 +75,7 @@ Opening it while it's already running brings up Settings.
 
 | Say… | What it does |
 |---|---|
-| "play blinding lights" / "can you put on ipad" | Plays it on YouTube Music |
+| "play blinding lights" / "can you put on ipad" | Plays it in your music app (YouTube Music plays straight away; Spotify opens the search) |
 | "play lofi beats on youtube" / "…on spotify" | YouTube instead, or a Spotify search |
 | "pause" / "resume" / "next" / "previous" | Controls whatever is playing |
 | "volume up" / "volume down" / "mute" | System volume |
@@ -144,7 +145,8 @@ GitHub Actions then builds a self-contained zip (no .NET needed on the target PC
 - **A game isn't detected:** with the game in front, right-click the notch and choose **Treat "game.exe" as a game**.
 - **"Play …" opens the song paused:** play anything on music.youtube.com once so your browser allows autoplay.
 - **The voice assistant mishears a song:** say the artist too, or add a free Groq key so the AI can correct it.
-- **No notifications:** Windows doesn't create them while Do Not Disturb or Focus is on.
+- **An app's notifications don't pop up (e.g. Discord):** Settings → Notifications → **Check recent notifications** shows what Windows recorded. If the app isn't listed, Windows never got a notification: for Discord, check User Settings → Notifications → *Enable Desktop Notifications*. Discord also skips them while its window is focused, and by default only notifies for DMs and @mentions.
+- **GPU temperature shows nothing:** it needs a graphics driver that reports it to Windows (the same reading Task Manager shows). Most NVIDIA and AMD cards do; many Intel integrated GPUs don't.
 - **Anything else:** Settings → About → **Open log**.
 
 ## License
