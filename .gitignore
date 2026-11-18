@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+out/
+publish/
+
+# Editors
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Never commit your personal settings (they can contain API keys and passwords)
+config.json

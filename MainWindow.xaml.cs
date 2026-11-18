@@ -1,0 +1,1202 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using System.IO;
+using System.Threading;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using Microsoft.Win32;
+using NotchWin.Services;
+
+namespace NotchWin;
+
+public partial class MainWindow : Window
+{
+    // ---------- sizes of the three states ----------
+    private const double ActivityWidth = 440, ExpandedWidth = 700, ExpandedHeight = 266;
+    private const int HotkeyId = 0x4E57;
+
+    private enum Mode { Compact, Activity, Expanded }
+
+    private class Activity
+    {
+        public string Glyph = "\uE946";
+        public Color Accent = Color.FromRgb(0x0A, 0x84, 0xFF);
+        public string Title = "";
+        public string Subtitle = "";
+        public double Seconds = 5;
+        public bool Sticky;
+        /// <summary>Runs when the pop-up finishes (used to "drop" notifications into the bell).</summary>
+        public Action OnEnd;
+        public string Tag;
+    }
+
+    private AppConfig _cfg;
+    private MediaService _media;
+    private SystemStatsService _stats;
+    private WeatherService _weather;
+    private GameWatcher _games;
+    private StreamService _stream;
+    private NotificationService _notifications;
+    private VoiceAssistant _voice;
+    private CommandRouter _router;
+
+    private IntPtr _hwnd;
+    private Mode _mode = Mode.Compact;
+    private bool _hovering, _hidden, _wasStreaming, _wasRecording;
+    private double _lastCompactWidth;
+    private Activity _activity;
+    private DateTime _activityUntil;
+    private readonly Queue<Activity> _queue = new();
+
+    private MediaInfo _mediaInfo;
+    private DateTime _mediaStamp;
+    private byte[] _shownThumb;
+    private string _lastTrack;
+    private bool _eqRunning, _liveAnimRunning;
+
+    private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer _hoverIn = new() { Interval = TimeSpan.FromMilliseconds(120) };
+    private readonly DispatcherTimer _hoverOut = new() { Interval = TimeSpan.FromMilliseconds(350) };
+    private readonly DispatcherTimer _trim = new() { Interval = TimeSpan.FromSeconds(8) };
+    private int _tickCount;
+    private SettingsWindow _settings;
+    private Theme _theme = Theme.All[0];
+    private LinearGradientBrush _bgBrush;   // kept so colour changes can animate (Vibe theme)
+
+    // Position / dragging
+    private bool _docked = true;          // touching the top edge = notch shape; anywhere else = floating pill
+    private bool _mouseDown, _dragging;
+    private Native.POINT _dragStartCursor;
+    private double _dragStartLeft, _dragStartTop;
+    private bool _clickThrough;
+    private readonly DispatcherTimer _hitTest = new() { Interval = TimeSpan.FromMilliseconds(60) };
+
+    // Notifications that went into the bell
+    private readonly List<NotificationItem> _notifs = new();
+    private int _unread;
+    private bool _showNotifs;
+
+    private double CompactHeight => Math.Clamp(_cfg.CompactHeight, 24, 60);
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        _cfg = AppConfig.Load();
+        ApplyTheme(_cfg.Theme);
+        _hoverIn.Interval = TimeSpan.FromMilliseconds(Math.Max(1, _cfg.HoverDelayMs));
+        Pill.Width = _cfg.CompactWidth;
+        Pill.Height = CompactHeight;
+
+        SourceInitialized += OnSourceInitialized;
+        Loaded += OnLoaded;
+        SystemEvents.DisplaySettingsChanged += (s, e) => Dispatcher.BeginInvoke(PositionWindow);
+
+        _hoverIn.Tick += (s, e) => { _hoverIn.Stop(); _hovering = true; UpdateMode(); };
+        _hoverOut.Tick += (s, e) => { _hoverOut.Stop(); _hovering = false; UpdateMode(); };
+        _tick.Tick += (s, e) => OnTick();
+        _hitTest.Tick += (s, e) => UpdateClickThrough();
+        // Give unused memory back to Windows a few seconds after the notch closes.
+        _trim.Tick += (s, e) => { _trim.Stop(); if (_mode != Mode.Expanded) Native.TrimMemory(); };
+    }
+
+    // =====================================================================
+    //  Startup
+    // =====================================================================
+
+    private void OnSourceInitialized(object sender, EventArgs e)
+    {
+        _hwnd = new WindowInteropHelper(this).Handle;
+
+        // Hidden from Alt+Tab and never steals focus from whatever you're doing.
+        long ex = Native.GetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE).ToInt64();
+        ex |= Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE;
+        Native.SetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE, new IntPtr(ex));
+
+        // Ctrl+Alt+Space = talk to the assistant
+        HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
+        if (!Native.RegisterHotKey(_hwnd, HotkeyId, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, Native.VK_SPACE))
+            Log.Write("Ctrl+Alt+Space is already used by another app.");
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == Native.WM_HOTKEY && wParam.ToInt32() == HotkeyId)
+        {
+            if (_voice != null) _voice.ListenNow();
+            else Push(new Activity { Tag = "voice", Glyph = "\uE720", Accent = Color.FromRgb(0x64, 0xD2, 0xFF), Seconds = 4,
+                                     Title = "Voice assistant is off", Subtitle = "Turn it on in Settings → Voice & AI." });
+            handled = true;
+        }
+        return IntPtr.Zero;
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        PositionWindow();
+        ApplyStartup();
+        BuildShortcuts();
+        BuildContextMenu();
+        ApplyMode(force: true);
+
+        _stats = new SystemStatsService();
+        _stats.Start();
+
+        _weather = new WeatherService(_cfg);
+        _weather.Start();
+
+        _games = new GameWatcher(_cfg);
+        _games.GameLaunched += name => Dispatcher.BeginInvoke(() => Push(new Activity
+        {
+            Glyph = "\uE7FC", Accent = Color.FromRgb(0xBF, 0x5A, 0xF2),
+            Title = "Launching " + name, Subtitle = "Have fun! The notch will hide while you play.", Seconds = 5,
+        }));
+        _games.Start();
+
+        _stream = new StreamService(_cfg);
+        _stream.Start();
+
+        _notifications = new NotificationService(_cfg);
+        _notifications.Received += n => Dispatcher.BeginInvoke(() => OnNotification(n));
+        _notifications.Start();
+
+        _media = new MediaService();
+        _media.Changed += info => Dispatcher.BeginInvoke(() => OnMediaChanged(info));
+        await _media.StartAsync();
+
+        _router = new CommandRouter(_cfg, _media, _weather);
+        if (!string.Equals(_cfg.VoiceMode, "Off", StringComparison.OrdinalIgnoreCase)) StartVoice();
+
+        OnTick();
+        _tick.Start();
+        _hitTest.Start();
+        _trim.Interval = TimeSpan.FromSeconds(30); // first trim once everything has started
+        _trim.Start();
+    }
+
+    // =====================================================================
+    //  Position: drag it anywhere. Near the top edge it docks as a notch, elsewhere it floats as a pill.
+    // =====================================================================
+
+    private void PositionWindow()
+    {
+        double cx = _cfg.PosX >= 0 ? _cfg.PosX : SystemParameters.PrimaryScreenWidth / 2;
+        double top = _cfg.PosY;
+
+        // Keep it on screen with room for the expanded view.
+        double vl = SystemParameters.VirtualScreenLeft, vt = SystemParameters.VirtualScreenTop;
+        double vr = vl + SystemParameters.VirtualScreenWidth, vb = vt + SystemParameters.VirtualScreenHeight;
+        cx = Math.Clamp(cx, vl + ExpandedWidth / 2 + 4, Math.Max(vl + ExpandedWidth / 2 + 4, vr - ExpandedWidth / 2 - 4));
+        top = Math.Clamp(top, vt, Math.Max(vt, vb - ExpandedHeight - 30));
+
+        double monitorTop = MonitorTopAt(cx, top + 5);
+        _docked = top - monitorTop < 1;
+        if (_docked) top = monitorTop;
+
+        Left = cx - Width / 2;
+        Top = top;
+        ApplyMode(force: true);
+    }
+
+    /// <summary>Top edge (in WPF units) of the monitor under a point.</summary>
+    private double MonitorTopAt(double xDip, double yDip)
+    {
+        try
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            var pt = new Native.POINT { X = (int)(xDip * dpi.DpiScaleX), Y = (int)(yDip * dpi.DpiScaleY) };
+            var mon = Native.MonitorFromPoint(pt, Native.MONITOR_DEFAULTTONEAREST);
+            var mi = new Native.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<Native.MONITORINFO>() };
+            if (Native.GetMonitorInfo(mon, ref mi)) return mi.rcMonitor.Top / dpi.DpiScaleY;
+        }
+        catch { }
+        return 0;
+    }
+
+    private void Pill_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        _mouseDown = true;
+        _dragging = false;
+        Native.GetCursorPos(out _dragStartCursor);
+        _dragStartLeft = Left;
+        _dragStartTop = Top;
+        // Don't capture the mouse yet: a plain click must still reach the notification cards etc.
+    }
+
+    private void Pill_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_mouseDown) return;
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            // The button was released somewhere we didn't see (e.g. on a card that handled the click).
+            _mouseDown = false;
+            if (_dragging) { _dragging = false; Pill.ReleaseMouseCapture(); }
+            return;
+        }
+        Native.GetCursorPos(out var cur);
+        int dx = cur.X - _dragStartCursor.X, dy = cur.Y - _dragStartCursor.Y;
+        if (!_dragging)
+        {
+            if (Math.Abs(dx) < 6 && Math.Abs(dy) < 6) return;
+            _dragging = true;
+            _hoverIn.Stop();
+            _hoverOut.Stop();
+            _hovering = false;
+            Pill.CaptureMouse(); // now follow the mouse even if it outruns the pill
+            UpdateMode(); // shrink to the small pill while you carry it
+        }
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        Left = _dragStartLeft + dx / dpi.DpiScaleX;
+        Top = _dragStartTop + dy / dpi.DpiScaleY;
+
+        // Preview the shape: snaps to a notch when you bring it to the top edge.
+        double cx = Left + Width / 2;
+        bool dock = Top - MonitorTopAt(cx, Top + 5) < 28;
+        if (dock != _docked)
+        {
+            _docked = dock;
+            ApplyMode(force: true);
+        }
+    }
+
+    private void Pill_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_mouseDown) return;
+        _mouseDown = false;
+        if (Pill.IsMouseCaptured) Pill.ReleaseMouseCapture();
+
+        if (_dragging)
+        {
+            _dragging = false;
+            double cx = Left + Width / 2;
+            double monitorTop = MonitorTopAt(cx, Top + 5);
+            _cfg.PosX = Math.Round(cx);
+            _cfg.PosY = Top - monitorTop < 28 ? monitorTop : Math.Round(Top);
+            _cfg.Save();
+            PositionWindow();
+            return;
+        }
+
+        // A simple click: dismiss a pop-up, or open the notifications if the bell is showing.
+        if (_mode == Mode.Activity && _activity != null) NextActivity();
+        else if (_mode == Mode.Compact && _unread > 0) OpenNotifications();
+    }
+
+    private void ResetPosition()
+    {
+        _cfg.PosX = -1;
+        _cfg.PosY = 0;
+        _cfg.Save();
+        PositionWindow();
+    }
+
+    /// <summary>
+    /// The window is bigger than the notch (so it has room to grow). Make every part of it except the
+    /// notch itself completely click-through, so the browser tabs or buttons under it keep working.
+    /// </summary>
+    private void UpdateClickThrough()
+    {
+        bool through;
+        if (_hidden) through = true;
+        else if (_mouseDown || Pill.ContextMenu?.IsOpen == true) through = false;
+        else
+        {
+            try
+            {
+                Native.GetCursorPos(out var p);
+                var tl = Pill.PointToScreen(new Point(0, 0));
+                var br = Pill.PointToScreen(new Point(Pill.ActualWidth, Pill.ActualHeight));
+                through = !(p.X >= tl.X - 1 && p.X <= br.X + 1 && p.Y >= tl.Y - 1 && p.Y <= br.Y + 1);
+            }
+            catch { through = false; }
+        }
+        if (through == _clickThrough) return;
+        _clickThrough = through;
+        long ex = Native.GetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE).ToInt64();
+        ex = through ? ex | Native.WS_EX_TRANSPARENT : ex & ~(long)Native.WS_EX_TRANSPARENT;
+        Native.SetWindowLongPtr(_hwnd, Native.GWL_EXSTYLE, new IntPtr(ex));
+    }
+
+    private CornerRadius Corners(double r) => _docked ? new CornerRadius(0, 0, r, r) : new CornerRadius(r);
+
+    private void ApplyStartup()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key == null) return;
+            if (_cfg.RunOnStartup) key.SetValue("NotchWin", $"\"{Environment.ProcessPath}\"");
+            else key.DeleteValue("NotchWin", false);
+        }
+        catch (Exception ex) { Log.Write("Startup registration: " + ex.Message); }
+
+        if (_cfg.RunOnStartup && StartupDisabledInTaskManager())
+        {
+            Dispatcher.BeginInvoke(() => Push(new Activity
+            {
+                Glyph = "\uE7BA", Accent = Color.FromRgb(0xFF, 0x9F, 0x0A), Seconds = 12,
+                Title = "Windows is blocking NotchWin at startup",
+                Subtitle = "Open Task Manager → Startup apps, right-click NotchWin → Enable.",
+            }), DispatcherPriority.ApplicationIdle);
+        }
+    }
+
+    /// <summary>Task Manager's "Startup apps" switch is stored separately; first byte 3 means "Disabled".</summary>
+    private static bool StartupDisabledInTaskManager()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run");
+            return k?.GetValue("NotchWin") is byte[] b && b.Length > 0 && (b[0] & 1) == 1;
+        }
+        catch { return false; }
+    }
+
+    // =====================================================================
+    //  Voice assistant
+    // =====================================================================
+
+    private void StartVoice()
+    {
+        _voice = new VoiceAssistant(_cfg);
+        _voice.StatusChanged += (state, detail) => Dispatcher.BeginInvoke(() => OnVoiceStatus(state, detail));
+        _voice.CommandHeard += cmd => _ = Task.Run(() => RunCommandAsync(cmd));
+        _voice.Start();
+    }
+
+    private bool _voiceWasDownloading;
+
+    private void OnVoiceStatus(VoiceAssistant.State state, string detail)
+    {
+        var cyan = Color.FromRgb(0x64, 0xD2, 0xFF);
+        switch (state)
+        {
+            case VoiceAssistant.State.Downloading:
+                _voiceWasDownloading = true;
+                Push(new Activity { Tag = "voice", Sticky = true, Glyph = "\uE896", Accent = cyan,
+                    Title = "Setting up the voice assistant", Subtitle = detail ?? "Downloading..." });
+                break;
+
+            case VoiceAssistant.State.Listening:
+                Push(new Activity { Tag = "voice", Sticky = true, Glyph = "\uE720", Accent = cyan,
+                    Title = "Listening...", Subtitle = "Try \"play lofi beats\", \"next song\", \"open discord\"" });
+                break;
+
+            case VoiceAssistant.State.Thinking:
+                Push(new Activity { Tag = "voice", Sticky = true, Glyph = "\uE720", Accent = cyan,
+                    Title = $"“{detail}”", Subtitle = "On it..." });
+                break;
+
+            case VoiceAssistant.State.Idle:
+                if (_activity?.Tag == "voice" && _activity.Sticky) RemoveTagged("voice");
+                if (_voiceWasDownloading)
+                {
+                    _voiceWasDownloading = false;
+                    string wake = _cfg.WakeWords.FirstOrDefault() ?? "computer";
+                    Push(new Activity { Tag = "voice", Glyph = "\uE720", Accent = cyan, Seconds = 5,
+                        Title = "Voice assistant ready", Subtitle = $"Say \"{wake}\" or press Ctrl+Alt+Space." });
+                }
+                break;
+
+            case VoiceAssistant.State.Off:
+                if (!string.IsNullOrEmpty(detail))
+                    Push(new Activity { Tag = "voice", Glyph = "\uE7BA", Accent = Color.FromRgb(0xFF, 0x9F, 0x0A),
+                        Seconds = 8, Title = "Voice assistant is off", Subtitle = detail });
+                break;
+        }
+    }
+
+    private async Task RunCommandAsync(string cmd)
+    {
+        string reply;
+        try { reply = await _router.HandleAsync(cmd); }
+        catch (Exception ex) { Log.Write("Command: " + ex); reply = "Something went wrong."; }
+
+        await Dispatcher.InvokeAsync(() => Push(new Activity
+        {
+            Tag = "voice", Glyph = "\uE720", Accent = Color.FromRgb(0x64, 0xD2, 0xFF),
+            Title = $"“{cmd}”", Subtitle = reply,
+            Seconds = Math.Clamp(3 + reply.Length / 14.0, 4, 14),
+        }));
+        _voice?.Speak(reply);
+        _voice?.Done();
+    }
+
+    // =====================================================================
+    //  The 2x-a-second refresh
+    // =====================================================================
+
+    private void OnTick()
+    {
+        _tickCount++;
+        var now = DateTime.Now;
+
+        // Hide for games / fullscreen.
+        bool hide = _games != null && _games.ShouldHide(_hwnd);
+        if (hide != _hidden) SetHidden(hide);
+
+        // Keep on top of other "always on top" windows.
+        if (_tickCount % 4 == 0)
+            Native.SetWindowPos(_hwnd, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+
+        // Activity timeout.
+        if (_activity != null && now > _activityUntil) NextActivity();
+
+        if (_stats != null) _stats.Active = _mode == Mode.Expanded && !_hidden;
+
+        UpdateIndicators();
+        UpdateCompact(now);
+
+        if (_mode == Mode.Expanded) RefreshExpanded(now);
+    }
+
+    private void RefreshExpanded(DateTime now)
+    {
+        BigTime.Text = now.ToString("h:mm tt");
+        DateText.Text = now.ToString("dddd, d MMM");
+        UpdateStats();
+        UpdateWeather();
+        UpdateProgress();
+    }
+
+    private void SetHidden(bool hide)
+    {
+        _hidden = hide;
+        Root.IsHitTestVisible = !hide;
+        Root.BeginAnimation(OpacityProperty, new DoubleAnimation(hide ? 0 : 1, TimeSpan.FromMilliseconds(hide ? 150 : 300)));
+        if (hide)
+        {
+            _hovering = false;
+            UpdateMode();
+        }
+    }
+
+    private void UpdateCompact(DateTime now)
+    {
+        var m = _mediaInfo;
+        bool showMedia = _cfg.ShowSongInPill && m != null && m.IsPlaying;
+        string temp = _cfg.ShowWeatherInPill && _weather?.Current != null ? $"  ·  {_weather.Current.Icon} {Math.Round(_weather.Current.Temp)}°" : "";
+        CompactText.Text = showMedia ? m.Title : now.ToString("h:mm tt") + temp;
+        CompactArt.Visibility = showMedia && m.Thumbnail != null ? Visibility.Visible : Visibility.Collapsed;
+        CompactIcon.Visibility = CompactArt.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+        CompactIcon.Text = showMedia ? (m.IsVideo ? "\uE714" : "\uE8D6") : "\uE823";
+        // Animations cost a little CPU, so only run them while you can actually see them.
+        SetEqualizer(showMedia && _cfg.ShowEqualizer && _mode == Mode.Compact && !_hidden);
+
+        if (_mode == Mode.Compact)
+        {
+            double w = CompactWidthNow();
+            if (Math.Abs(w - _lastCompactWidth) > 0.5) AnimateSize(w, CompactHeight);
+        }
+    }
+
+    private double CompactWidthNow()
+    {
+        double w = _cfg.CompactWidth;
+        if (_cfg.ShowSongInPill && _mediaInfo != null && _mediaInfo.IsPlaying) w = Math.Max(w, 300);
+        if (_stream != null && (_stream.IsStreaming || _stream.IsRecording || _stream.MicInUse || _stream.CameraInUse)) w += 20;
+        if (_unread > 0) w += 24;
+        return w;
+    }
+
+    private void UpdateIndicators()
+    {
+        if (_stream == null) return;
+        bool live = _stream.IsStreaming, rec = _stream.IsRecording;
+
+        LiveDot.Visibility = live || rec ? Visibility.Visible : Visibility.Collapsed;
+        bool pulse = (live || rec) && !_hidden;
+        if (pulse != _liveAnimRunning)
+        {
+            _liveAnimRunning = pulse;
+            AnimationTimeline anim = null;
+            if (pulse)
+            {
+                anim = new DoubleAnimation(1, 0.25, TimeSpan.FromMilliseconds(800)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+                Timeline.SetDesiredFrameRate(anim, 20); // a slow pulse doesn't need 60 fps
+            }
+            LiveDot.BeginAnimation(OpacityProperty, anim);
+        }
+        LiveBadge.Visibility = live ? Visibility.Visible : Visibility.Collapsed;
+        RecBadge.Visibility = rec ? Visibility.Visible : Visibility.Collapsed;
+        MicDot.Visibility = _stream.MicInUse ? Visibility.Visible : Visibility.Collapsed;
+        CamDot.Visibility = _stream.CameraInUse ? Visibility.Visible : Visibility.Collapsed;
+        MicBadge.Visibility = _stream.MicInUse ? Visibility.Visible : Visibility.Collapsed;
+        MicBadgeText.Text = "Mic · " + _stream.MicApp;
+
+        var red = Color.FromRgb(0xFF, 0x3B, 0x30);
+        if (live && !_wasStreaming) Push(new Activity { Glyph = "\uE714", Accent = red, Title = "You're live", Subtitle = "Streaming from OBS", Seconds = 4 });
+        if (!live && _wasStreaming) Push(new Activity { Glyph = "\uE714", Accent = red, Title = "Stream ended", Subtitle = "Nice stream!", Seconds = 4 });
+        if (rec && !_wasRecording) Push(new Activity { Glyph = "\uE7C8", Accent = red, Title = "Recording", Subtitle = "OBS is recording", Seconds = 3 });
+        _wasStreaming = live;
+        _wasRecording = rec;
+    }
+
+    private void UpdateStats()
+    {
+        var s = _stats?.Current;
+        if (s == null) return;
+        SetBar(CpuBar, CpuTrack, s.Cpu, _theme.Accent1);
+        CpuText.Text = $"{s.Cpu:0}%";
+        SetBar(RamBar, RamTrack, s.Ram, _theme.Accent2);
+        RamText.Text = $"{s.RamUsedGb:0.0}/{s.RamTotalGb:0} GB";
+        if (s.Gpu >= 0)
+        {
+            SetBar(GpuBar, GpuTrack, s.Gpu, _theme.Accent3);
+            GpuText.Text = $"{s.Gpu:0}%";
+        }
+        else GpuText.Text = "n/a";
+
+        NetIcon.Text = !s.Online ? "\uE7BA" : s.NetworkName == "Wi-Fi" ? "\uE701" : "\uE839";
+        NetSpeed.Text = $"↓ {SystemStatsService.FormatSpeed(s.DownBytesPerSec)}   ↑ {SystemStatsService.FormatSpeed(s.UpBytesPerSec)}";
+        NetInfo.Text = !s.Online ? "Offline" : s.PingMs >= 0 ? $"{s.NetworkName} · {s.PingMs} ms ping" : s.NetworkName;
+    }
+
+    private static void SetBar(System.Windows.Controls.Border bar, FrameworkElement track, double pct, Color baseColor)
+    {
+        double w = Math.Max(0, track.ActualWidth * Math.Clamp(pct, 0, 100) / 100.0);
+        bar.BeginAnimation(WidthProperty, new DoubleAnimation(w, TimeSpan.FromMilliseconds(400)));
+        // Turn orange/red when things get busy.
+        var c = pct >= 90 ? Color.FromRgb(0xFF, 0x45, 0x3A) : pct >= 75 ? Color.FromRgb(0xFF, 0x9F, 0x0A) : baseColor;
+        bar.Background = new SolidColorBrush(c);
+    }
+
+    private void UpdateWeather()
+    {
+        var w = _weather?.Current;
+        if (w == null)
+        {
+            WeatherTemp.Text = "";
+            WeatherDesc.Text = "Getting weather...";
+            return;
+        }
+        WeatherIcon.Text = w.Icon;
+        WeatherTemp.Text = $"{Math.Round(w.Temp)}{w.Unit}  {w.City}";
+        WeatherDesc.Text = $"{w.Description} · feels {Math.Round(w.FeelsLike)}° · {w.Humidity}% humidity";
+    }
+
+    // =====================================================================
+    //  Media
+    // =====================================================================
+
+    private void OnMediaChanged(MediaInfo info)
+    {
+        var prev = _mediaInfo;
+        _mediaInfo = info;
+        _mediaStamp = DateTime.Now;
+
+        if (info == null)
+        {
+            MediaSource.Text = "";
+            MediaTitle.Text = "Nothing playing";
+            MediaArtist.Text = "Play something on Spotify, YouTube...";
+            BigArt.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "Track");
+            BigArtPlaceholder.Visibility = Visibility.Visible;
+            PlayButton.Content = "\uE768";
+            _shownThumb = null;
+            UpdateCompact(DateTime.Now);
+            return;
+        }
+
+        MediaSource.Text = (info.IsVideo || info.Source == "YouTube" ? "Watching · " : "Now playing · ") + info.Source;
+        MediaTitle.Text = info.Title;
+        MediaArtist.Text = info.Artist;
+        PlayButton.Content = info.IsPlaying ? "\uE769" : "\uE768";
+
+        if (!ReferenceEquals(info.Thumbnail, _shownThumb))
+        {
+            _shownThumb = info.Thumbnail;
+            var img = ToImage(info.Thumbnail);
+            // Videos get a wide 16:9 thumbnail, songs a square cover.
+            bool wide = img != null && img.PixelHeight > 0 && img.PixelWidth / (double)img.PixelHeight > 1.3;
+            BigArt.Width = wide ? 160 : 100;
+            BigArt.Height = wide ? 90 : 100;
+            if (_theme.Id == "vibe") ApplyVibe(img);
+            if (img != null)
+            {
+                BigArt.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+                CompactArt.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+                BigArtPlaceholder.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                BigArt.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "Track");
+                BigArtPlaceholder.Visibility = Visibility.Visible;
+            }
+        }
+
+        // Song changed while you weren't looking: a quick "now playing" pop.
+        string track = info.Title + "|" + info.Artist;
+        if (_cfg.ShowSongPopups && info.IsPlaying && prev != null && _lastTrack != null && track != _lastTrack && _mode != Mode.Expanded && !_hidden)
+        {
+            Push(new Activity
+            {
+                Tag = "media", Glyph = info.IsVideo ? "\uE714" : "\uE8D6", Accent = Color.FromRgb(0xFF, 0x37, 0x5F),
+                Title = info.Title, Subtitle = string.IsNullOrEmpty(info.Artist) ? info.Source : $"{info.Artist} · {info.Source}", Seconds = 4,
+            });
+        }
+        _lastTrack = track;
+        UpdateCompact(DateTime.Now);
+    }
+
+    private void UpdateProgress()
+    {
+        var m = _mediaInfo;
+        if (m == null || m.Duration.TotalSeconds < 1) { MediaProgress.Width = 0; return; }
+        var pos = m.Position + (m.IsPlaying ? DateTime.Now - _mediaStamp : TimeSpan.Zero);
+        double frac = Math.Clamp(pos.TotalSeconds / m.Duration.TotalSeconds, 0, 1);
+        MediaProgress.Width = ProgressTrack.ActualWidth * frac;
+    }
+
+    private static BitmapImage ToImage(byte[] data)
+    {
+        if (data == null || data.Length == 0) return null;
+        try
+        {
+            var bi = new BitmapImage();
+            using var ms = new MemoryStream(data);
+            bi.BeginInit();
+            bi.CacheOption = BitmapCacheOption.OnLoad;
+            bi.DecodePixelWidth = 200;
+            bi.StreamSource = ms;
+            bi.EndInit();
+            bi.Freeze();
+            return bi;
+        }
+        catch { return null; }
+    }
+
+    private void SetEqualizer(bool on)
+    {
+        Equalizer.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        if (on == _eqRunning) return;
+        _eqRunning = on;
+        var bars = new[] { Bar1, Bar2, Bar3 };
+        var durations = new[] { 420, 300, 520 };
+        for (int i = 0; i < bars.Length; i++)
+        {
+            var st = (ScaleTransform)bars[i].RenderTransform;
+            if (on)
+            {
+                var anim = new DoubleAnimation(0.25, 1, TimeSpan.FromMilliseconds(durations[i]))
+                {
+                    AutoReverse = true,
+                    RepeatBehavior = RepeatBehavior.Forever,
+                    EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+                };
+                Timeline.SetDesiredFrameRate(anim, 24);
+                st.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+            }
+            else
+            {
+                st.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+                st.ScaleY = 0.35;
+            }
+        }
+    }
+
+    private async void PlayPause_Click(object sender, RoutedEventArgs e) => await _media.PlayPauseAsync();
+    private async void Next_Click(object sender, RoutedEventArgs e) => await _media.NextAsync();
+    private async void Prev_Click(object sender, RoutedEventArgs e) => await _media.PreviousAsync();
+
+    // =====================================================================
+    //  Activities (the little pop-ups)
+    // =====================================================================
+
+    private void Push(Activity a)
+    {
+        // Same kind of activity already showing (e.g. voice states)? Replace it in place.
+        if (a.Tag != null && _activity?.Tag == a.Tag)
+        {
+            Begin(a);
+            return;
+        }
+        if (a.Tag != null)
+        {
+            var keep = _queue.Where(q => q.Tag != a.Tag).ToList();
+            _queue.Clear();
+            foreach (var q in keep) _queue.Enqueue(q);
+        }
+
+        // Voice always jumps the queue.
+        if (_activity == null || a.Tag == "voice") Begin(a);
+        else if (_queue.Count < 4) _queue.Enqueue(a);
+    }
+
+    private void Begin(Activity a)
+    {
+        _activity = a;
+        _activityUntil = a.Sticky ? DateTime.MaxValue : DateTime.Now.AddSeconds(a.Seconds);
+        ActivityIcon.Text = a.Glyph;
+        ActivityIconBg.Background = new SolidColorBrush(a.Accent);
+        ActivityTitle.Text = a.Title;
+        ActivitySubtitle.Text = a.Subtitle ?? "";
+        ActivitySubtitle.Visibility = string.IsNullOrEmpty(a.Subtitle) ? Visibility.Collapsed : Visibility.Visible;
+        UpdateMode(force: _mode == Mode.Activity);
+    }
+
+    private void NextActivity()
+    {
+        var ended = _activity;
+        _activity = null;
+        try { ended?.OnEnd?.Invoke(); } catch { }
+        if (_queue.Count > 0) Begin(_queue.Dequeue());
+        else UpdateMode();
+    }
+
+    private void RemoveTagged(string tag)
+    {
+        var keep = _queue.Where(q => q.Tag != tag).ToList();
+        _queue.Clear();
+        foreach (var q in keep) _queue.Enqueue(q);
+        if (_activity?.Tag == tag) NextActivity();
+    }
+
+    private void Activity_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (_activity != null) NextActivity();
+    }
+
+    // =====================================================================
+    //  Themes
+    // =====================================================================
+
+    /// <summary>Restyles the whole notch instantly. Also used by Settings for live preview.</summary>
+    public void ApplyTheme(string id)
+    {
+        _theme = Theme.Find(id);
+        foreach (var kv in _theme.MakeBrushes()) Resources[kv.Key] = kv.Value;
+
+        _bgBrush = _theme.MakeBackground();
+        Resources["NotchBg"] = _bgBrush;
+        Pill.BorderThickness = new Thickness(_theme.BorderThickness);
+
+        Shadow.Visibility = _theme.Shadow ? Visibility.Visible : Visibility.Hidden;
+        if (Shadow.Effect is System.Windows.Media.Effects.DropShadowEffect fx)
+        {
+            fx.BeginAnimation(System.Windows.Media.Effects.DropShadowEffect.ColorProperty, null); // stop any Vibe fade
+            fx.Color = _theme.Glow;
+            fx.Opacity = _theme.GlowOpacity;
+            fx.BlurRadius = _theme.GlowOpacity > 0.7 ? 26 : 22;
+            fx.ShadowDepth = _theme.GlowOpacity > 0.7 ? 0 : 4; // glows sit evenly around the edge
+        }
+
+        if (_theme.Id == "vibe" && _shownThumb != null) ApplyVibe(ToImage(_shownThumb));
+        if (_mode == Mode.Expanded) UpdateStats();
+    }
+
+    /// <summary>Vibe theme: fade the notch into the colours of the current cover art.</summary>
+    private void ApplyVibe(BitmapSource img)
+    {
+        var baseTheme = Theme.Find("vibe");
+        Color top = baseTheme.Bg1, bottom = baseTheme.Bg2, accent = baseTheme.Accent3;
+        var dom = img != null ? Theme.DominantColor(img) : null;
+        if (dom != null)
+        {
+            top = Theme.Shade(dom.Value, 0.06);
+            bottom = Theme.Shade(dom.Value, 0.32);
+            accent = Theme.Shade(dom.Value, 0.95);
+        }
+
+        var dur = TimeSpan.FromMilliseconds(900);
+        if (_bgBrush != null && !_bgBrush.IsFrozen && _bgBrush.GradientStops.Count == 2)
+        {
+            _bgBrush.GradientStops[0].BeginAnimation(GradientStop.ColorProperty, new ColorAnimation(top, dur));
+            _bgBrush.GradientStops[1].BeginAnimation(GradientStop.ColorProperty, new ColorAnimation(bottom, dur));
+        }
+        Resources["Eq"] = new SolidColorBrush(accent);
+        if (Shadow.Effect is System.Windows.Media.Effects.DropShadowEffect fx)
+            fx.BeginAnimation(System.Windows.Media.Effects.DropShadowEffect.ColorProperty, new ColorAnimation(accent, dur));
+    }
+
+    // =====================================================================
+    //  Notifications: a short pop-up, then it tucks into the bell
+    // =====================================================================
+
+    private void OnNotification(NotificationItem n)
+    {
+        _notifs.Insert(0, n);
+        if (_notifs.Count > 30) _notifs.RemoveAt(_notifs.Count - 1);
+        if (_showNotifs) RenderNotifList();
+
+        if (_hidden)
+        {
+            // Gaming: no pop-up at all, it just waits in the bell.
+            _unread++;
+            UpdateBell();
+            return;
+        }
+
+        // Watching a video / fullscreen app: keep the pop-up really short.
+        bool watching = (_mediaInfo != null && _mediaInfo.IsPlaying && (_mediaInfo.IsVideo || _mediaInfo.Source == "YouTube"))
+                        || GameWatcher.IsForegroundFullscreen(_hwnd);
+        Push(new Activity
+        {
+            Glyph = "\uE8BD", Accent = Color.FromRgb(0x0A, 0x84, 0xFF),
+            Title = $"{n.App} · {n.Title}", Subtitle = n.Body,
+            Seconds = Math.Max(0.8, watching ? _cfg.NotificationPopupSecondsWhileWatching : _cfg.NotificationPopupSeconds),
+            OnEnd = () =>
+            {
+                _unread++;
+                UpdateBell();
+                BounceBell();
+            },
+        });
+    }
+
+    private void UpdateBell()
+    {
+        string count = _unread > 9 ? "9+" : _unread.ToString();
+        BellPanel.Visibility = _unread > 0 ? Visibility.Visible : Visibility.Collapsed;
+        BellCount.Text = count;
+        HeaderBadge.Visibility = _unread > 0 ? Visibility.Visible : Visibility.Collapsed;
+        HeaderBadgeCount.Text = count;
+        if (_mode == Mode.Compact) AnimateSize(CompactWidthNow(), CompactHeight);
+    }
+
+    /// <summary>A little "ding" wiggle as the notification lands in the bell.</summary>
+    private void BounceBell()
+    {
+        var grow = new DoubleAnimation(1, 1.45, TimeSpan.FromMilliseconds(140))
+        {
+            AutoReverse = true,
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+            BeginTime = TimeSpan.FromMilliseconds(250), // after the pill has shrunk back
+        };
+        BellScale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+        BellScale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+    }
+
+    private void OpenNotifications()
+    {
+        ShowNotifPage(true);
+        _hoverIn.Stop();
+        _hovering = true; // stays open until the mouse leaves
+        UpdateMode();
+    }
+
+    private void ShowNotifPage(bool show)
+    {
+        _showNotifs = show;
+        NotifPage.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        MainPage.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+        ShortcutsBar.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+        if (show)
+        {
+            _unread = 0;
+            UpdateBell();
+            RenderNotifList();
+        }
+    }
+
+    private void Bell_Click(object sender, RoutedEventArgs e) => ShowNotifPage(!_showNotifs);
+
+    private void ClearNotifs_Click(object sender, RoutedEventArgs e)
+    {
+        _notifs.Clear();
+        _unread = 0;
+        UpdateBell();
+        RenderNotifList();
+    }
+
+    private void RenderNotifList()
+    {
+        NotifList.Children.Clear();
+        if (_notifs.Count == 0)
+        {
+            var empty = new TextBlock
+            {
+                Text = "You're all caught up.",
+                Margin = new Thickness(0, 20, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            empty.SetResourceReference(TextBlock.ForegroundProperty, "FgDim");
+            NotifList.Children.Add(empty);
+            return;
+        }
+
+        foreach (var n in _notifs)
+        {
+            var item = n;
+            var head = new DockPanel();
+            var app = new TextBlock { Text = item.App, FontSize = 11 };
+            app.SetResourceReference(TextBlock.ForegroundProperty, "FgDim");
+            var time = new TextBlock { Text = Ago(item.Time), FontSize = 11 };
+            time.SetResourceReference(TextBlock.ForegroundProperty, "FgFaint");
+            DockPanel.SetDock(time, Dock.Right);
+            head.Children.Add(time);
+            head.Children.Add(app);
+
+            var body = new StackPanel();
+            body.Children.Add(head);
+            body.Children.Add(new TextBlock { Text = item.Title, FontSize = 13, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 2, 0, 0) });
+            if (!string.IsNullOrEmpty(item.Body))
+            {
+                var bodyText = new TextBlock { Text = item.Body, FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxHeight = 34, TextTrimming = TextTrimming.CharacterEllipsis };
+                bodyText.SetResourceReference(TextBlock.ForegroundProperty, "FgSoft");
+                body.Children.Add(bodyText);
+            }
+
+            var card = new Border
+            {
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(12, 8, 12, 8),
+                Margin = new Thickness(0, 0, 0, 6),
+                Child = body,
+                Cursor = Cursors.Hand,
+                ToolTip = "Open " + item.App,
+            };
+            card.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "TileBg");
+            card.MouseLeftButtonUp += (s, e) => { e.Handled = true; OpenNotificationApp(item); };
+            NotifList.Children.Add(card);
+        }
+    }
+
+    /// <summary>Clicking a notification opens the app that sent it (works for Store apps like WhatsApp and most others).</summary>
+    private static void OpenNotificationApp(NotificationItem n)
+    {
+        if (string.IsNullOrWhiteSpace(n.Handler)) return;
+        CommandRouter.Open("explorer.exe", $"shell:AppsFolder\\{n.Handler}");
+    }
+
+    private static string Ago(DateTime t)
+    {
+        var d = DateTime.Now - t;
+        if (d.TotalMinutes < 1) return "now";
+        if (d.TotalHours < 1) return $"{(int)d.TotalMinutes}m";
+        if (d.TotalDays < 1) return $"{(int)d.TotalHours}h";
+        return t.ToString("d MMM");
+    }
+
+    // =====================================================================
+    //  Shape-shifting
+    // =====================================================================
+
+    private void UpdateMode(bool force = false)
+    {
+        Mode target = _hidden || _dragging ? Mode.Compact
+                    : _hovering ? Mode.Expanded
+                    : _activity != null ? Mode.Activity
+                    : Mode.Compact;
+        if (target == _mode && !force) return;
+        if (target != Mode.Expanded && _showNotifs) ShowNotifPage(false);
+        _mode = target;
+        ApplyMode(force);
+    }
+
+    private void ApplyMode(bool force = false)
+    {
+        switch (_mode)
+        {
+            case Mode.Compact:
+                ShowView(CompactView);
+                Pill.CornerRadius = Corners(CompactHeight / 2);
+                _trim.Interval = TimeSpan.FromSeconds(8);
+                _trim.Stop();
+                _trim.Start();
+                AnimateSize(CompactWidthNow(), CompactHeight);
+                break;
+
+            case Mode.Activity:
+                ShowView(ActivityView);
+                bool tall = (_activity?.Subtitle?.Length ?? 0) > 52;
+                Pill.CornerRadius = Corners(26);
+                AnimateSize(ActivityWidth, tall ? 96 : 66);
+                break;
+
+            case Mode.Expanded:
+                RefreshExpanded(DateTime.Now); // fresh numbers before it opens
+                ShowView(ExpandedView);
+                Pill.CornerRadius = Corners(32);
+                AnimateSize(ExpandedWidth, ExpandedHeight);
+                break;
+        }
+    }
+
+    private void ShowView(FrameworkElement view)
+    {
+        foreach (var v in new FrameworkElement[] { CompactView, ActivityView, ExpandedView })
+        {
+            if (ReferenceEquals(v, view))
+            {
+                if (v.Visibility == Visibility.Visible && v.Opacity > 0.99) continue;
+                v.Visibility = Visibility.Visible;
+                v.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(220))
+                {
+                    BeginTime = TimeSpan.FromMilliseconds(110),
+                });
+            }
+            else
+            {
+                v.BeginAnimation(OpacityProperty, null);
+                v.Opacity = 0;
+                v.Visibility = Visibility.Collapsed;
+            }
+        }
+    }
+
+    private void AnimateSize(double w, double h)
+    {
+        if (_mode == Mode.Compact) _lastCompactWidth = w;
+        var ease = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.22 };
+        var dur = TimeSpan.FromMilliseconds(420);
+        Pill.BeginAnimation(WidthProperty, new DoubleAnimation(w, dur) { EasingFunction = ease });
+        Pill.BeginAnimation(HeightProperty, new DoubleAnimation(h, dur) { EasingFunction = ease });
+    }
+
+    private void Pill_MouseEnter(object sender, MouseEventArgs e)
+    {
+        _hoverOut.Stop();
+        if (!_hovering) _hoverIn.Start();
+    }
+
+    private void Pill_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _hoverIn.Stop();
+        if (Pill.ContextMenu?.IsOpen == true) return;
+        if (_hovering) _hoverOut.Start();
+    }
+
+    // =====================================================================
+    //  Shortcuts & menu
+    // =====================================================================
+
+    private void BuildShortcuts()
+    {
+        ShortcutsBar.Items.Clear();
+        foreach (var s in _cfg.Shortcuts)
+        {
+            var item = s;
+            ShortcutsBar.Items.Add(MakeTile(item.Icon, item.Name, () => CommandRouter.Open(item.Target, item.Args)));
+        }
+        ShortcutsBar.Items.Add(MakeTile("E720", "Ask", () => _voice?.ListenNow()));
+        ShortcutsBar.Items.Add(MakeTile("E713", "Notch", OpenSettings));
+    }
+
+    private Button MakeTile(string icon, string label, Action onClick)
+    {
+        bool isGlyph = Regex.IsMatch(icon ?? "", "^[0-9A-Fa-f]{4,5}$");
+        var iconText = new TextBlock
+        {
+            Text = isGlyph ? char.ConvertFromUtf32(Convert.ToInt32(icon, 16)) : (icon ?? ""),
+            FontFamily = isGlyph ? (FontFamily)FindResource("Icons") : new FontFamily("Segoe UI Emoji"),
+            FontSize = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        var labelText = new TextBlock
+        {
+            Text = label,
+            FontSize = 10.5,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 62,
+        };
+        labelText.SetResourceReference(TextBlock.ForegroundProperty, "FgSoft");
+        var stack = new StackPanel();
+        stack.Children.Add(iconText);
+        stack.Children.Add(labelText);
+
+        var btn = new Button { Style = (Style)FindResource("Tile"), Content = stack, ToolTip = label };
+        btn.Click += (s, e) => onClick();
+        return btn;
+    }
+
+    private void BuildContextMenu()
+    {
+        var menu = new ContextMenu();
+
+        var settings = new MenuItem { Header = "Settings" };
+        settings.Click += (s, e) => OpenSettings();
+        menu.Items.Add(settings);
+
+        var ask = new MenuItem { Header = "Ask assistant   (Ctrl+Alt+Space)" };
+        ask.Click += (s, e) => _voice?.ListenNow();
+        menu.Items.Add(ask);
+
+        // "Treat <the app you're in> as a game" — for games the auto-detection misses.
+        var markGame = new MenuItem();
+        menu.Items.Add(markGame);
+        (uint pid, string path) fgApp = (0, null);
+        // Remember which app was in front at the moment you right-clicked (before the menu takes over).
+        Pill.PreviewMouseRightButtonDown += (s, e) => fgApp = GameWatcher.ForegroundApp();
+        menu.Opened += (s, e) =>
+        {
+            bool usable = fgApp.path != null && !fgApp.path.EndsWith("\\explorer.exe", StringComparison.OrdinalIgnoreCase);
+            markGame.Visibility = usable ? Visibility.Visible : Visibility.Collapsed;
+            if (usable) markGame.Header = $"Treat \u201C{Path.GetFileName(fgApp.path)}\u201D as a game (hide for it)";
+        };
+        markGame.Click += (s, e) =>
+        {
+            if (fgApp.path == null || _games == null) return;
+            _games.MarkAsGame(fgApp.pid, fgApp.path);
+            Push(new Activity { Glyph = "\uE7FC", Accent = Color.FromRgb(0xBF, 0x5A, 0xF2), Seconds = 4,
+                Title = "Got it", Subtitle = $"The notch will hide while {Path.GetFileNameWithoutExtension(fgApp.path)} is in front." });
+        };
+
+        menu.Items.Add(new Separator());
+
+        var resetPos = new MenuItem { Header = "Move back to top centre" };
+        resetPos.Click += (s, e) => ResetPosition();
+        menu.Items.Add(resetPos);
+
+        var restart = new MenuItem { Header = "Restart" };
+        restart.Click += (s, e) => Restart();
+        menu.Items.Add(restart);
+
+        var quit = new MenuItem { Header = "Quit" };
+        quit.Click += (s, e) => Close();
+        menu.Items.Add(quit);
+
+        menu.Closed += (s, e) => { if (!Pill.IsMouseOver) _hoverOut.Start(); };
+        Pill.ContextMenu = menu;
+    }
+
+    /// <summary>Opens the Settings window (or brings it to the front). Saving restarts the notch.</summary>
+    public void OpenSettings()
+    {
+        if (_settings != null)
+        {
+            _settings.Activate();
+            return;
+        }
+        _settings = new SettingsWindow(onSaved: Restart, previewTheme: ApplyTheme);
+        _settings.Closed += (s, e) =>
+        {
+            _settings = null;
+            ApplyTheme(_cfg.Theme); // undo any theme you only previewed (Save restarts with the new one anyway)
+        };
+        _settings.Show();
+        _settings.Activate();
+    }
+
+    private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    private void Restart()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath) { Arguments = "--restart", UseShellExecute = true });
+        }
+        catch (Exception ex) { Log.Write("Restart: " + ex.Message); }
+        Close();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        try { Native.UnregisterHotKey(_hwnd, HotkeyId); } catch { }
+        _voice?.Dispose();
+        base.OnClosed(e);
+        Application.Current.Shutdown();
+    }
+}

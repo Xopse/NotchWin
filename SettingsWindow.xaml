@@ -1,0 +1,286 @@
+<Window x:Class="NotchWin.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="NotchWin Settings" Width="820" Height="640" MinWidth="700" MinHeight="500"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="True"
+        Icon="pack://application:,,,/Assets/NotchWin.ico"
+        FontFamily="Segoe UI Variable Text, Segoe UI">
+
+    <Window.Resources>
+        <Style x:Key="H1" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+        <Style x:Key="H2" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,22,0,8" />
+        </Style>
+        <Style x:Key="Label" TargetType="TextBlock">
+            <Setter Property="Margin" Value="0,12,0,4" />
+        </Style>
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="Opacity" Value="0.65" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+        <Style x:Key="Page" TargetType="StackPanel">
+            <Setter Property="Margin" Value="28,20,28,28" />
+            <Setter Property="MaxWidth" Value="620" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Margin" Value="0,8,0,0" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TabControl x:Name="Tabs" TabStripPlacement="Left" BorderThickness="0" Padding="0">
+
+            <!-- ================= NOTCH ================= -->
+            <TabItem Header="Notch">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}">
+                        <TextBlock Text="Notch" Style="{StaticResource H1}" />
+                        <TextBlock Text="How the notch looks and behaves." Style="{StaticResource Hint}" />
+
+                        <TextBlock Text="When to hide" Style="{StaticResource H2}" />
+                        <ComboBox x:Name="HideModeBox" Width="360" HorizontalAlignment="Left">
+                            <ComboBoxItem Tag="Games" Content="Only while a game is open (recommended)" />
+                            <ComboBoxItem Tag="AnyFullscreen" Content="For any fullscreen app (games, videos...)" />
+                            <ComboBoxItem Tag="Never" Content="Never hide" />
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource Hint}"
+                                   Text="With the first option the notch stays on top of every app, including fullscreen YouTube, and only steps aside for games. If a game isn't detected, right-click the notch while the game is in front and choose “Treat … as a game”." />
+
+                        <TextBlock Text="Position" Style="{StaticResource H2}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Drag the notch with the mouse to move it anywhere. Drop it at the top edge of a screen and it docks as a notch; drop it anywhere else and it floats as a pill. Only the notch itself catches clicks, so whatever is underneath it still works." />
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="Move back to top centre" Click="ResetPosition_Click" />
+                            <TextBlock x:Name="PositionText" Margin="12,0,0,0" VerticalAlignment="Center" Opacity="0.65" FontSize="12" />
+                        </StackPanel>
+
+                        <TextBlock Text="Size" Style="{StaticResource H2}" />
+                        <TextBlock x:Name="WidthLabel" Style="{StaticResource Label}" />
+                        <Slider x:Name="WidthSlider" Minimum="150" Maximum="420" TickFrequency="10" IsSnapToTickEnabled="True" Width="360" HorizontalAlignment="Left" />
+                        <TextBlock x:Name="HeightLabel" Style="{StaticResource Label}" />
+                        <Slider x:Name="HeightSlider" Minimum="26" Maximum="46" TickFrequency="1" IsSnapToTickEnabled="True" Width="360" HorizontalAlignment="Left" />
+                        <TextBlock x:Name="HoverLabel" Style="{StaticResource Label}" />
+                        <Slider x:Name="HoverSlider" Minimum="0" Maximum="800" TickFrequency="20" IsSnapToTickEnabled="True" Width="360" HorizontalAlignment="Left" />
+
+                        <TextBlock Text="What the small pill shows" Style="{StaticResource H2}" />
+                        <CheckBox x:Name="ShowSongBox" Content="Song title and cover art while music is playing" />
+                        <CheckBox x:Name="ShowEqBox" Content="Animated equalizer bars while playing" />
+                        <CheckBox x:Name="ShowWeatherBox" Content="Weather next to the time" />
+                        <CheckBox x:Name="SongPopupBox" Content="Pop open briefly when the song changes" />
+
+                        <TextBlock Text="Startup" Style="{StaticResource H2}" />
+                        <CheckBox x:Name="StartupBox" Content="Start NotchWin when Windows starts" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================= THEMES ================= -->
+            <TabItem Header="Themes">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}" MaxWidth="660">
+                        <TextBlock Text="Themes" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Click a theme to try it on the notch right away. Save to keep it, Cancel to go back." />
+                        <WrapPanel x:Name="ThemeCards" Margin="0,16,0,0" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================= VOICE & AI ================= -->
+            <TabItem Header="Voice &amp; AI">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}">
+                        <TextBlock Text="Voice &amp; AI" Style="{StaticResource H1}" />
+
+                        <TextBlock Text="Voice assistant" Style="{StaticResource H2}" />
+                        <ComboBox x:Name="VoiceModeBox" Width="420" HorizontalAlignment="Left">
+                            <ComboBoxItem Tag="WakeWord" Content="Wake word + Ctrl+Alt+Space (always listening)" />
+                            <ComboBoxItem Tag="Hotkey" Content="Ctrl+Alt+Space only (mic off otherwise, lightest)" />
+                            <ComboBoxItem Tag="Off" Content="Off" />
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource Hint}" Text="Speech recognition runs offline on your PC. Always-listening uses a little CPU all the time; hotkey-only uses none until you press it." />
+
+                        <TextBlock Text="Wake words (comma separated)" Style="{StaticResource Label}" />
+                        <TextBox x:Name="WakeWordsBox" Width="360" HorizontalAlignment="Left" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Single common English words work best, e.g. computer, jarvis." />
+
+                        <TextBlock Text="Speech model" Style="{StaticResource Label}" />
+                        <ComboBox x:Name="VoskBox" Width="360" HorizontalAlignment="Left">
+                            <ComboBoxItem Tag="in" Content="English (India)" />
+                            <ComboBoxItem Tag="us" Content="English (US)" />
+                        </ComboBox>
+                        <CheckBox x:Name="SpeakBox" Content="Speak replies out loud" />
+
+                        <TextBlock Text="AI for questions" Style="{StaticResource H2}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Commands like play, pause, open, weather work without this. Add a key so it can also answer anything else (“computer, how far is the moon”)." />
+
+                        <TextBlock Text="Provider" Style="{StaticResource Label}" />
+                        <ComboBox x:Name="ProviderBox" Width="360" HorizontalAlignment="Left" SelectionChanged="ProviderBox_SelectionChanged" />
+                        <TextBlock x:Name="ProviderNote" Style="{StaticResource Hint}" />
+                        <TextBlock Style="{StaticResource Hint}">
+                            <Hyperlink x:Name="KeyLink" RequestNavigate="Link_RequestNavigate">
+                                <Run x:Name="KeyLinkText" Text="Get an API key" />
+                            </Hyperlink>
+                        </TextBlock>
+
+                        <TextBlock Text="API key" Style="{StaticResource Label}" />
+                        <PasswordBox x:Name="KeyBox" Width="360" HorizontalAlignment="Left" />
+
+                        <StackPanel x:Name="BaseUrlPanel">
+                            <TextBlock Text="API address (base URL)" Style="{StaticResource Label}" />
+                            <TextBox x:Name="BaseUrlBox" Width="360" HorizontalAlignment="Left" />
+                            <TextBlock Style="{StaticResource Hint}" Text="e.g. http://localhost:11434/v1 for Ollama, https://openrouter.ai/api/v1 for OpenRouter." />
+                        </StackPanel>
+
+                        <TextBlock Text="Model" Style="{StaticResource Label}" />
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="ModelBox" Width="360" IsEditable="True" />
+                            <Button Content="Load models" Margin="8,0,0,0" Click="LoadModels_Click" />
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Hint}" Text="Leave empty to use the provider's default." />
+
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <Button Content="Test AI" Click="TestAi_Click" />
+                            <TextBlock x:Name="AiStatus" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="440" />
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================= INFO ================= -->
+            <TabItem Header="Weather &amp; Streaming">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}">
+                        <TextBlock Text="Weather &amp; Streaming" Style="{StaticResource H1}" />
+
+                        <TextBlock Text="Weather" Style="{StaticResource H2}" />
+                        <TextBlock Text="City" Style="{StaticResource Label}" />
+                        <TextBox x:Name="CityBox" Width="300" HorizontalAlignment="Left" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Leave empty to detect it automatically from your internet connection." />
+                        <CheckBox x:Name="FahrenheitBox" Content="Use °F instead of °C" />
+
+                        <TextBlock Text="OBS (red LIVE dot)" Style="{StaticResource H2}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="In OBS open Tools → WebSocket Server Settings, tick “Enable WebSocket server”, click “Show Connect Info” and copy the port and password here." />
+                        <TextBlock Text="Port" Style="{StaticResource Label}" />
+                        <TextBox x:Name="ObsPortBox" Width="120" HorizontalAlignment="Left" />
+                        <TextBlock Text="Password" Style="{StaticResource Label}" />
+                        <PasswordBox x:Name="ObsPasswordBox" Width="300" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================= NOTIFICATIONS ================= -->
+            <TabItem Header="Notifications">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}">
+                        <TextBlock Text="Notifications" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="The notch pops up for notifications that matter. Nothing pops up while you're in a game." />
+                        <CheckBox x:Name="AllNotifBox" Content="Show every notification" Margin="0,16,0,0" />
+                        <TextBlock x:Name="PopupLabel" Style="{StaticResource Label}" />
+                        <Slider x:Name="PopupSlider" Minimum="1" Maximum="10" TickFrequency="0.5" IsSnapToTickEnabled="True" Width="360" HorizontalAlignment="Left" />
+                        <TextBlock x:Name="PopupWatchLabel" Style="{StaticResource Label}" />
+                        <Slider x:Name="PopupWatchSlider" Minimum="0.8" Maximum="5" TickFrequency="0.2" IsSnapToTickEnabled="True" Width="360" HorizontalAlignment="Left" />
+                        <TextBlock Style="{StaticResource Hint}" Text="After popping up, notifications tuck into the bell on the notch. Hover the notch and click the bell to see them; click one to open its app." />
+                        <TextBlock Text="Important apps (comma separated)" Style="{StaticResource Label}" />
+                        <TextBox x:Name="AppsBox" TextWrapping="Wrap" AcceptsReturn="False" Width="560" HorizontalAlignment="Left" />
+                        <TextBlock Text="Important words (comma separated)" Style="{StaticResource Label}" />
+                        <TextBox x:Name="KeywordsBox" TextWrapping="Wrap" AcceptsReturn="False" Width="560" HorizontalAlignment="Left" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Any notification whose text contains one of these words is shown, whatever app sent it." />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================= GAMES ================= -->
+            <TabItem Header="Games">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}">
+                        <TextBlock Text="Games" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Games are found automatically from Windows Game Bar and from game library folders (Steam, Epic, Xbox, Riot, GOG, EA, Ubisoft). Add anything it misses here, one per line." />
+                        <TextBlock Text="Extra games (exe names, e.g. GTA5.exe)" Style="{StaticResource Label}" />
+                        <TextBox x:Name="ExtraGamesBox" AcceptsReturn="True" Height="90" VerticalScrollBarVisibility="Auto" Width="560" HorizontalAlignment="Left" />
+                        <TextBlock Text="Never treat these exes as games" Style="{StaticResource Label}" />
+                        <TextBox x:Name="IgnoreExesBox" AcceptsReturn="True" Height="90" VerticalScrollBarVisibility="Auto" Width="560" HorizontalAlignment="Left" />
+                        <TextBlock Text="Game library folders" Style="{StaticResource Label}" />
+                        <TextBox x:Name="FoldersBox" AcceptsReturn="True" Height="90" VerticalScrollBarVisibility="Auto" Width="560" HorizontalAlignment="Left" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================= SHORTCUTS ================= -->
+            <TabItem Header="Shortcuts">
+                <Grid Margin="28,20,28,20">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="Shortcuts" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Tiles in the expanded notch. Target can be an app path, a website, a folder or a ms-settings: link. Icon is a Segoe Fluent icon code (like E7FC) or any short text." />
+                    </StackPanel>
+                    <DataGrid x:Name="ShortcutsGrid" Grid.Row="1" Margin="0,14,0,10" AutoGenerateColumns="False"
+                              CanUserAddRows="False" HeadersVisibility="Column" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="110" />
+                            <DataGridTextColumn Header="Icon" Binding="{Binding Icon}" Width="70" />
+                            <DataGridTextColumn Header="Target" Binding="{Binding Target}" Width="*" />
+                            <DataGridTextColumn Header="Arguments" Binding="{Binding Args}" Width="110" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal">
+                        <Button Content="Add" Click="AddShortcut_Click" />
+                        <Button Content="Remove selected" Margin="8,0,0,0" Click="RemoveShortcut_Click" />
+                        <Button Content="Move up" Margin="8,0,0,0" Click="MoveUp_Click" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ================= ABOUT ================= -->
+            <TabItem Header="About">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Style="{StaticResource Page}">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="pack://application:,,,/Assets/logo-128.png" Width="72" Height="72" RenderOptions.BitmapScalingMode="HighQuality" />
+                            <StackPanel Margin="16,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="NotchWin" Style="{StaticResource H1}" />
+                                <TextBlock x:Name="VersionText" Style="{StaticResource Hint}" Text="Your personal notch for Windows." />
+                            </StackPanel>
+                        </StackPanel>
+                        <TextBlock Text="Shortcuts" Style="{StaticResource H2}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Hover the notch to expand it · Right-click for the menu · Ctrl+Alt+Space to talk · Click a pop-up to dismiss it." />
+                        <TextBlock Text="Files" Style="{StaticResource H2}" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Open settings folder" Click="OpenFolder_Click" />
+                            <Button Content="Open log" Margin="8,0,0,0" Click="OpenLog_Click" />
+                        </StackPanel>
+                        <TextBlock Text="Quit" Style="{StaticResource H2}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Closes the notch completely. Start it again from the Start menu (search “NotchWin”) or the desktop shortcut. If “Start with Windows” is on, it also comes back the next time you sign in." />
+                        <Button Content="Quit NotchWin" HorizontalAlignment="Left" Margin="0,10,0,0" Click="Quit_Click" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <!-- Footer -->
+        <Border Grid.Row="1" Padding="20,12" BorderThickness="0,1,0,0" BorderBrush="#33FFFFFF">
+            <DockPanel LastChildFill="False">
+                <TextBlock x:Name="FooterText" DockPanel.Dock="Left" VerticalAlignment="Center" Opacity="0.65" FontSize="12"
+                           Text="Saving restarts the notch so changes apply." />
+                <Button x:Name="SaveButton" DockPanel.Dock="Right" Content="Save" Width="110" Click="Save_Click" />
+                <Button DockPanel.Dock="Right" Content="Cancel" Width="90" Margin="0,0,8,0" Click="Cancel_Click" />
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

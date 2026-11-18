@@ -1,0 +1,52 @@
+# Builds NotchWin on every push, so you see straight away if something doesn't compile.
+# Push a tag like v1.5.0 and it also publishes a ready-to-run download on the Releases page
+# (self-contained: the PCs you test on don't need .NET installed).
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build (self-contained, x64)
+        run: dotnet publish NotchWin.csproj -c Release -r win-x64 --self-contained true -o out/app
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev-$("${{ github.sha }}".Substring(0,7))" }
+          $name = "NotchWin-$version-win-x64"
+          New-Item -ItemType Directory -Force out/pkg | Out-Null
+          Copy-Item out/app out/pkg/app -Recurse
+          Copy-Item "Install NotchWin.bat", install.ps1, uninstall.ps1, README.md, LICENSE -Destination out/pkg
+          Compress-Archive -Path out/pkg/* -DestinationPath "out/$name.zip"
+          "ZIP=out/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZIPNAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIPNAME }}
+          path: ${{ env.ZIP }}
+
+      - name: Create GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+          generate_release_notes: true

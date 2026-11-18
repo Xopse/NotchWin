@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- The Windows 10 SDK target gives us the WinRT media-control APIs. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>NotchWin</AssemblyName>
+    <RootNamespace>NotchWin</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Product>NotchWin</Product>
+    <Version>1.5.0</Version>
+    <ApplicationIcon>Assets\NotchWin.ico</ApplicationIcon>
+    <Company>NotchWin</Company>
+    <Description>A Dynamic-Island-style notch for Windows</Description>
+    <!-- WPF's built-in Windows 11 theme (used by the Settings window) is marked "experimental". -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+
+    <!-- ===== Keep it light ===== -->
+    <!-- Workstation GC without the background GC thread: smallest memory footprint for a small UI app. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <!-- Pre-compile to native code when publishing: faster start, less CPU spent compiling at runtime. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <TieredPGO>true</TieredPGO>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Logo, used by the Settings window -->
+    <Resource Include="Assets\NotchWin.ico" />
+    <Resource Include="Assets\logo-128.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Text-to-speech for the assistant's replies -->
+    <PackageReference Include="System.Speech" Version="10.0.0" />
+    <!-- Reading the Windows notification database, using the SQLite that ships with Windows (kept patched by Windows Update) -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_winsqlite3" Version="2.1.11" />
+    <!-- Offline speech recognition (wake word + commands) -->
+    <PackageReference Include="Vosk" Version="0.3.38" />
+    <!-- Microphone capture -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>
