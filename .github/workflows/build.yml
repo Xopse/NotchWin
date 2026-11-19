@@ -18,6 +18,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags, so the tag's message can become the changelog
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -44,6 +46,17 @@ jobs:
           "ZIP=out/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "ZIPNAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Changelog from the tag message
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          git fetch --tags --force | Out-Null
+          # Annotated tag (git tag -a v1.8.0 -m "...") → its message. Plain tag → the commit message.
+          $notes = (git tag -l --format='%(contents)' "${{ github.ref_name }}" | Out-String).Trim()
+          if (-not $notes) { $notes = (git log -1 --format=%B "${{ github.ref_name }}" | Out-String).Trim() }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Set-Content -Path out/notes.md -Value $notes -Encoding utf8
+
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
@@ -55,4 +68,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ZIP }}
-          generate_release_notes: true
+          body_path: out/notes.md

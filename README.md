@@ -29,7 +29,7 @@
 | 🌦️ **Weather** | Shows the local weather automatically, no key needed |
 | 🎙️ **Voice assistant** | "computer, play blinding lights": the wake word is detected offline, then Groq Whisper (free) understands the command. Say "computer" to interrupt it mid-reply |
 | 🎨 **12 themes** | Midnight, Nightfall, Aurora, Sunset, Ocean, Neon, Sakura, Ember, Glass, Daylight, **Neon Coast** (Miami sunset), and **Vibe**, which matches your album art |
-| 🔄 **Auto-update** | Installed copies update themselves from GitHub Releases |
+| 🔄 **Updates** | Everyone gets a "new version" pop-up with your changelog and an **Update now** button |
 | 🖱️ **Movable** | Drag it anywhere: it docks to the top or bottom edge, turns **vertical** on the left or right edge, or floats. It always opens towards the free side, so nothing gets cut off |
 | 🎧 **Your music app** | Pick Spotify or YouTube Music for the Music tile and "play …" |
 | 🪶 **Lightweight** | Stats are only measured while it's open, animations only run while visible, and spare memory is handed back |
@@ -54,7 +54,7 @@ Windows SmartScreen may warn you because the app isn't code-signed. Click **More
 - starts NotchWin when you sign in
 - shows up under **Settings → Apps → Installed apps**, so you can uninstall it from there
 
-**Updates are automatic.** NotchWin checks GitHub Releases at start-up and every 6 hours, then installs new versions itself. It waits until you're not in a game. You can also go to Settings → About → *Check for updates now*.
+**Updates:** NotchWin checks GitHub Releases at start-up and every 6 hours. When there's a new version you get a pop-up (also kept in the bell) with what's new and an **Update now** button. In Settings → About you can switch to fully automatic updates, or turn checking off.
 
 **Requirements:** Windows 10 (2004 or later) or Windows 11, 64-bit (x64).
 
@@ -76,11 +76,12 @@ Opening it while it's already running brings up Settings.
 
 | Say… | What it does |
 |---|---|
-| "play blinding lights" / "can you put on ipad" | Plays it in your music app (YouTube Music plays straight away; Spotify opens the search) |
+| "play blinding lights" / "can you put on ipad" | Plays it in your music app: the song version on YouTube Music, or the top result in Spotify |
 | "play lofi beats on youtube" / "…on spotify" | YouTube instead, or a Spotify search |
 | "pause" / "resume" / "next" / "previous" | Controls whatever is playing |
-| "volume up" / "volume down" / "mute" | System volume |
-| "open discord" / "open youtube" | Opens your shortcuts, any Start menu app, or common sites |
+| "set volume to 50" / "turn it down by 10" / "volume up" / "mute" | Exact or relative system volume |
+| "connect my buds" / "disconnect headphones" / "bluetooth off" | Connects or disconnects paired Bluetooth headphones and speakers, and turns Bluetooth on or off |
+| "open discord" / "open downloads" / "open youtube" | Opens any app (including Store apps), folders like Downloads, or common sites. If it isn't sure ("riot games"), it asks *"Did you mean Riot Client?"* and listens for yes or no |
 | "search for rtx 5070 price" | Runs a Google search |
 | "what time is it" / "what's the weather" | Answers out loud |
 | Anything else | Asks the AI, if you've added a key |
@@ -118,9 +119,11 @@ Every push to GitHub is built automatically (the **Actions** tab), so you see st
 To publish a download for other PCs, push a version tag:
 
 ```
-git tag v1.5.0
-git push origin v1.5.0
+git tag -a v1.8.0 -m "What's new in 1.8" -m "- Connect Bluetooth headphones by voice" -m "- Opens Downloads and other folders"
+git push origin v1.8.0
 ```
+
+The tag's message becomes the **changelog** shown to everyone in the update pop-up. Each `-m` adds a line. A plain `git tag v1.8.0` uses your last commit message instead.
 
 GitHub Actions then builds a self-contained zip (no .NET needed on the target PC) and attaches it to a new release on the **Releases** page. The tag sets the version number, and **every installed copy updates itself to it**. This only works while the repository is public, because GitHub hides private releases from everyone else.
 

@@ -17,7 +17,7 @@ namespace NotchWin.Services;
 /// </summary>
 public static class Updater
 {
-    public record Release(Version Version, string Tag, string ZipUrl);
+    public record Release(Version Version, string Tag, string ZipUrl, string Notes);
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
@@ -62,7 +62,8 @@ public static class Updater
                 .Select(a => a.url)
                 .FirstOrDefault();
             if (zip == null) return (null, $"Release {tag} has no NotchWin download attached (yet).");
-            return (new Release(version, tag, zip), null);
+            string notes = root.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() : "";
+            return (new Release(version, tag, zip, notes ?? ""), null);
         }
         catch (Exception ex) { return (null, "Couldn't reach GitHub: " + ex.Message); }
     }

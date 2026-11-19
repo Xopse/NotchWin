@@ -36,6 +36,8 @@ public partial class MainWindow : Window
         public bool Sticky;
         /// <summary>Runs when the pop-up finishes (used to "drop" notifications into the bell).</summary>
         public Action OnEnd;
+        /// <summary>Runs when you click the pop-up (e.g. "see what's new").</summary>
+        public Action OnClick;
         public string Tag;
     }
 
@@ -190,7 +192,7 @@ public partial class MainWindow : Window
             await Task.Delay(TimeSpan.FromMinutes(1));
             while (true)
             {
-                if (_cfg.AutoUpdate && Updater.IsInstalledCopy)
+                if (!string.Equals(_cfg.UpdateMode, "off", StringComparison.OrdinalIgnoreCase) && Updater.IsInstalledCopy)
                 {
                     try { await Dispatcher.InvokeAsync(() => CheckForUpdatesAsync(manual: false)).Task.Unwrap(); }
                     catch (Exception ex) { Log.Write("Update: " + ex.Message); }
@@ -206,7 +208,14 @@ public partial class MainWindow : Window
 
     private bool _updating;
 
-    /// <summary>Checks GitHub for a newer release and installs it. Returns a short status for Settings.</summary>
+    private Updater.Release _availableUpdate;
+    private string _announcedTag;
+    private UpdateWindow _updateWindow;
+
+    /// <summary>
+    /// Checks GitHub for a newer release. Depending on Settings it either tells you about it (pop-up + bell,
+    /// with the changelog) or installs it by itself. Returns a short status for Settings.
+    /// </summary>
     public async Task<string> CheckForUpdatesAsync(bool manual)
     {
         if (_updating) return "An update is already being installed.";
@@ -216,6 +225,62 @@ public partial class MainWindow : Window
         if (!Updater.IsInstalledCopy)
             return $"Version {release.Version} is available. This copy isn't the installed one, so install it with the installer.";
 
+        _availableUpdate = release;
+        if (manual)
+        {
+            ShowUpdateWindow();
+            return $"Version {release.Tag} is available.";
+        }
+        if (string.Equals(_cfg.SkippedVersion, release.Tag, StringComparison.OrdinalIgnoreCase)) return "Skipped.";
+        if (string.Equals(_cfg.UpdateMode, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            await InstallUpdateAsync(release, waitForGames: true);
+            return $"Installing {release.Tag}...";
+        }
+
+        // "Ask" mode: tell everyone once, with the changelog one click away.
+        if (_announcedTag != release.Tag)
+        {
+            _announcedTag = release.Tag;
+            string firstLine = (release.Notes ?? "").Replace("\r", "").Split('\n')
+                .Select(l => l.Trim().TrimStart('#', '-', '*', ' ').Trim())
+                .FirstOrDefault(l => l.Length > 0) ?? "";
+            if (firstLine.Length > 70) firstLine = firstLine[..70] + "...";
+
+            Push(new Activity
+            {
+                Tag = "update", Glyph = "\uE896", Accent = Color.FromRgb(0x30, 0xD1, 0x58), Seconds = 10,
+                Title = $"NotchWin {release.Tag} is out",
+                Subtitle = (firstLine.Length > 0 ? firstLine + "  ·  " : "") + "Click to see what's new",
+                OnClick = ShowUpdateWindow,
+            });
+            // Also leave it in the bell, so you can find it later.
+            _notifs.Insert(0, new NotificationItem
+            {
+                App = "NotchWin", Title = $"Update {release.Tag} available", Body = firstLine.Length > 0 ? firstLine : "Click to see what's new",
+                Handler = "notchwin:update",
+            });
+            if (_showNotifs) RenderNotifList();
+        }
+        return $"Version {release.Tag} is available.";
+    }
+
+    private void ShowUpdateWindow()
+    {
+        if (_availableUpdate == null) return;
+        if (_updateWindow != null) { _updateWindow.Activate(); return; }
+        var release = _availableUpdate;
+        _updateWindow = new UpdateWindow(release, Updater.Current,
+            install: () => InstallUpdateAsync(release, waitForGames: false),
+            skip: () => { _cfg.SkippedVersion = release.Tag; _cfg.Save(); });
+        _updateWindow.Closed += (s, e) => _updateWindow = null;
+        _updateWindow.Show();
+        _updateWindow.Activate();
+    }
+
+    private async Task InstallUpdateAsync(Updater.Release release, bool waitForGames)
+    {
+        if (_updating) return;
         _updating = true;
         var green = Color.FromRgb(0x30, 0xD1, 0x58);
         try
@@ -225,15 +290,15 @@ public partial class MainWindow : Window
             var (appDir, pkgRoot) = await Updater.DownloadAsync(release);
 
             // Don't restart in the middle of a game.
-            while (_hidden && !manual) await Task.Delay(TimeSpan.FromSeconds(30));
+            while (_hidden && waitForGames) await Task.Delay(TimeSpan.FromSeconds(30));
 
             Push(new Activity { Tag = "update", Sticky = true, Glyph = "\uE777", Accent = green,
                 Title = $"Installing {release.Tag}", Subtitle = "NotchWin will be back in a few seconds." });
             await Task.Delay(2500);
             Updater.ApplyAndRestart(appDir, pkgRoot, release.Version);
+            _updateWindow?.Close();
             _settings?.Close();
             Close();
-            return $"Installing {release.Tag}...";
         }
         catch (Exception ex)
         {
@@ -241,7 +306,7 @@ public partial class MainWindow : Window
             Log.Write("Update failed: " + ex);
             Push(new Activity { Tag = "update", Glyph = "\uE7BA", Accent = Color.FromRgb(0xFF, 0x9F, 0x0A), Seconds = 6,
                 Title = "Update failed", Subtitle = ex.Message });
-            return "Update failed: " + ex.Message;
+            throw;
         }
     }
 
@@ -423,7 +488,12 @@ public partial class MainWindow : Window
         }
 
         // A simple click: dismiss a pop-up, or open the notifications if the bell is showing.
-        if (_mode == Mode.Activity && _activity != null) NextActivity();
+        if (_mode == Mode.Activity && _activity != null)
+        {
+            var onClick = _activity.OnClick;
+            NextActivity();
+            onClick?.Invoke();
+        }
         else if (_mode == Mode.Compact && _unread > 0) OpenNotifications();
     }
 
@@ -534,7 +604,8 @@ public partial class MainWindow : Window
             case VoiceAssistant.State.Listening:
                 Push(new Activity { Tag = "voice", Sticky = true, Glyph = "\uE720", Accent = cyan,
                     Title = "Listening...",
-                    Subtitle = _voice != null && _voice.UsesCloudSpeech
+                    Subtitle = !string.IsNullOrEmpty(detail) ? detail
+                        : _voice != null && _voice.UsesCloudSpeech
                         ? "Speak naturally. I'll stop listening when you pause."
                         : "Try \"play lofi beats\", \"next song\", \"open discord\"" });
                 break;
@@ -578,6 +649,9 @@ public partial class MainWindow : Window
         }));
         _voice?.Speak(reply);
         _voice?.Done();
+        // We asked a question ("Did you mean Riot Client?"): listen for the answer, no wake word needed.
+        if (_router.ExpectsAnswer)
+            _voice?.ListenAfterSpeaking(reply.StartsWith("Did you mean") ? reply + " Say yes or no." : reply);
     }
 
     // =====================================================================
@@ -1128,8 +1202,9 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Clicking a notification opens the app that sent it (works for Store apps like WhatsApp and most others).</summary>
-    private static void OpenNotificationApp(NotificationItem n)
+    private void OpenNotificationApp(NotificationItem n)
     {
+        if (n.Handler == "notchwin:update") { ShowUpdateWindow(); return; }
         if (string.IsNullOrWhiteSpace(n.Handler)) return;
         CommandRouter.Open("explorer.exe", $"shell:AppsFolder\\{n.Handler}");
     }

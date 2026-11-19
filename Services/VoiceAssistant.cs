@@ -55,6 +55,14 @@ public class VoiceAssistant : IDisposable
     private bool _needsVerify;                  // started by the wake word: double-check it really was said
     private bool _pausedSpeech;                 // we paused the reply while checking
     private int _wakeHits;                      // how many audio chunks in a row looked like the wake word
+    private VoskRecognizer _checkRec;           // full-vocabulary recogniser used for the quick re-check
+    private readonly object _checkLock = new();
+    private bool _silent;                       // recording, but the wake word isn't confirmed yet (nothing shown)
+    private bool _checkStarted;
+    private Task<bool> _check;
+    private int _captureChunks;
+    private int _captureId;
+    private DateTime _ignoreWakeUntil = DateTime.MinValue;
     private readonly Queue<byte[]> _preBuffer = new(); // last ~2.5 s, so the wake word itself is never cut off
     private readonly Queue<double> _recentLoudness = new(); // loudness of the last ~0.8 s
     private double _noiseFloor = 300;
@@ -94,6 +102,7 @@ public class VoiceAssistant : IDisposable
             if (words.Count == 0) words.Add("computer");
             _wakeRec = new VoskRecognizer(_model, Rate, JsonSerializer.Serialize(words.Append("[unk]")));
             _fullRec = new VoskRecognizer(_model, Rate);
+            _checkRec = new VoskRecognizer(_model, Rate);
 
             _tts = new SpeechSynthesizer();
             _tts.SetOutputToDefaultAudioDevice();
@@ -136,6 +145,27 @@ public class VoiceAssistant : IDisposable
 
     public void Done() { if (_model != null && !_capturing) SetStatus(State.Idle); }
 
+    private string _listenPrompt;
+
+    /// <summary>
+    /// After asking you something ("Did you mean Riot Client?"), wait for the question to finish being
+    /// spoken, then listen for your answer without needing the wake word.
+    /// </summary>
+    public void ListenAfterSpeaking(string prompt)
+    {
+        if (_model == null) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(300);
+            var until = DateTime.Now.AddSeconds(15);
+            while (IsSpeaking && DateTime.Now < until) await Task.Delay(100);
+            await Task.Delay(150);
+            _listenPrompt = prompt;
+            MicOn();
+            lock (_lock) { if (!_capturing) BeginCapture(includePreBuffer: false, interrupted: false, needsVerify: false, followUp: true); }
+        });
+    }
+
     // =====================================================================
     //  Audio in
     // =====================================================================
@@ -151,12 +181,18 @@ public class VoiceAssistant : IDisposable
             if (_capturing)
             {
                 _capture.Write(chunk, 0, chunk.Length);
+                _captureChunks++;
                 if (!UsesCloudSpeech) _fullRec.AcceptWaveform(chunk, chunk.Length);
+
+                // Quick re-check of the wake word with the full-vocabulary model (runs in the background).
+                if (_silent && !_checkStarted && _captureChunks >= 4) StartQuickCheck();
 
                 var now = DateTime.Now;
                 if (rms > SpeechThreshold) { _heardSpeech = true; _lastVoice = now; }
 
-                bool doneTalking = _heardSpeech && (now - _lastVoice).TotalMilliseconds > 900;
+                // A slightly longer pause is allowed after the wake word, so "computer… play X" isn't cut short.
+                double pauseMs = _needsVerify || _followUp ? 1200 : 900;
+                bool doneTalking = _heardSpeech && (now - _lastVoice).TotalMilliseconds > pauseMs;
                 bool tooLong = (now - _captureStart).TotalSeconds > 10;
                 bool saidNothing = !_heardSpeech && (now - _captureStart).TotalSeconds > 5;
                 if (doneTalking || tooLong || saidNothing) FinishCapture();
@@ -181,17 +217,13 @@ public class VoiceAssistant : IDisposable
             else _wakeHits = 0;
             if (final && _wakeHits == 0) _wakeRec.Reset();
 
-            if (_wakeHits >= WakeHitsNeeded || (final && _wakeHits > 0))
+            if ((_wakeHits >= WakeHitsNeeded || (final && _wakeHits > 0)) && DateTime.Now >= _ignoreWakeUntil)
             {
                 _wakeHits = 0;
                 _wakeRec.Reset();
-                bool wasSpeaking = IsSpeaking;
-                if (wasSpeaking)
-                {
-                    // Pause (not stop) the reply while we check you really said the wake word.
-                    try { _tts.Pause(); _pausedSpeech = true; } catch { }
-                }
-                BeginCapture(includePreBuffer: true, interrupted: wasSpeaking, needsVerify: true);
+                // Start recording quietly. Nothing is shown (and a reply isn't interrupted) until the
+                // quick re-check confirms the wake word was really said.
+                BeginCapture(includePreBuffer: true, interrupted: IsSpeaking, needsVerify: true, silent: true);
             }
         }
     }
@@ -233,12 +265,12 @@ public class VoiceAssistant : IDisposable
     /// Second check, on the accurate transcript: was a wake word really said (in the first few words)?
     /// Allows small spelling differences ("jarvis" / "javis", "computer" / "computers").
     /// </summary>
-    private bool TranscriptHasWakeWord(string text)
+    private bool TranscriptHasWakeWord(string text, bool strict = false)
     {
         var words = Regex.Split((text ?? "").ToLowerInvariant(), @"[^a-z']+").Where(w => w.Length > 0).Take(12).ToList();
         foreach (var wake in _cfg.WakeWords.Where(w => !string.IsNullOrWhiteSpace(w)).Select(w => w.Trim().ToLowerInvariant()))
         {
-            int allowed = wake.Length >= 6 ? 2 : 1;
+            int allowed = strict ? (wake.Length >= 7 ? 1 : 0) : (wake.Length >= 6 ? 2 : 1);
             if (words.Any(w => Distance(w, wake) <= allowed)) return true;
         }
         return false;
@@ -260,9 +292,17 @@ public class VoiceAssistant : IDisposable
     // =====================================================================
 
     /// <summary>Must be called inside _lock.</summary>
-    private void BeginCapture(bool includePreBuffer, bool interrupted, bool needsVerify = false)
+    private bool _followUp;
+
+    private void BeginCapture(bool includePreBuffer, bool interrupted, bool needsVerify = false, bool silent = false, bool followUp = false)
     {
         _capturing = true;
+        _followUp = followUp;
+        _silent = silent;
+        _checkStarted = false;
+        _check = null;
+        _captureChunks = 0;
+        _captureId++;
         _interruptedSpeech = interrupted;
         _needsVerify = needsVerify;
         _heardSpeech = false;
@@ -279,12 +319,126 @@ public class VoiceAssistant : IDisposable
                 if (Rms(c) > SpeechThreshold) _heardSpeech = true;
             }
             // The wake word itself counts as speech; wait for the pause after the whole sentence.
-            _heardSpeech = true;
+            // (A follow-up recording is different: it waits for you to start talking.)
+            if (!followUp) _heardSpeech = true;
             _lastVoice = DateTime.Now;
         }
         _preBuffer.Clear();
         _recentLoudness.Clear();
-        SetStatus(State.Listening);
+        if (!silent) SetStatus(State.Listening, _listenPrompt);
+        _listenPrompt = null;
+    }
+
+    /// <summary>
+    /// Re-listens to the recording so far with the full-vocabulary model. That model isn't forced to choose
+    /// between "computer" and nothing, so random noise won't come out as the wake word.
+    /// Must be called inside _lock.
+    /// </summary>
+    private void StartQuickCheck()
+    {
+        _checkStarted = true;
+        int id = _captureId;
+        byte[] audio = _capture.ToArray();
+        _check = Task.Run(() => VerifyWakeAsync(audio, id, canGrow: true));
+        _check.ContinueWith(t =>
+        {
+            bool ok = t.Status == TaskStatus.RanToCompletion && t.Result;
+            lock (_lock)
+            {
+                if (id != _captureId || !_capturing) return; // already finished; FinishCapture handles it
+                if (!ok)
+                {
+                    AbortCapture();
+                    return;
+                }
+                ConfirmWake();
+            }
+        });
+    }
+
+    /// <summary>Same quick check, used when the recording ended before it started. Inside _lock.</summary>
+    private void StartQuickCheckOn(byte[] audio)
+    {
+        _checkStarted = true;
+        _check = Task.Run(() => VerifyWakeAsync(audio, -1, canGrow: false));
+    }
+
+    private readonly Queue<DateTime> _cloudChecks = new();
+
+    /// <summary>
+    /// Was the wake word really said? Yes if the full-vocabulary offline model hears it (or something very
+    /// close, like "compute"), or, when it isn't sure and a Groq key is set, if Whisper hears it.
+    /// </summary>
+    private async Task<bool> VerifyWakeAsync(byte[] audio, int id, bool canGrow)
+    {
+        string offline;
+        lock (_checkLock)
+        {
+            _checkRec.Reset();
+            _checkRec.AcceptWaveform(audio, audio.Length);
+            offline = ReadField(_checkRec.FinalResult(), "text");
+        }
+        if (OfflineHeardWakeWord(offline)) return true;
+
+        if (!UsesCloudSpeech || !CloudCheckAllowed()) return false;
+
+        // Give it a moment more audio so the whole word is in the clip, then ask Whisper.
+        if (canGrow)
+        {
+            await Task.Delay(400);
+            lock (_lock)
+            {
+                if (id == _captureId && _capturing && _capture != null) audio = _capture.ToArray();
+            }
+        }
+        try { return TranscriptHasWakeWord(await TranscribeWithGroqAsync(audio)); }
+        catch (Exception ex) { Log.Write("Wake check (Groq): " + ex.Message); return false; }
+    }
+
+    /// <summary>At most 15 Whisper wake checks a minute, so false alarms can't use up the free Groq allowance.</summary>
+    private bool CloudCheckAllowed()
+    {
+        lock (_cloudChecks)
+        {
+            while (_cloudChecks.Count > 0 && (DateTime.Now - _cloudChecks.Peek()).TotalSeconds > 60) _cloudChecks.Dequeue();
+            if (_cloudChecks.Count >= 15) return false;
+            _cloudChecks.Enqueue(DateTime.Now);
+            return true;
+        }
+    }
+
+    /// <summary>Forgiving match for the offline model, which often writes "compute", "computers", etc.</summary>
+    private bool OfflineHeardWakeWord(string text)
+    {
+        if (TranscriptHasWakeWord(text)) return true;
+        var words = Regex.Split((text ?? "").ToLowerInvariant(), @"[^a-z']+").Where(w => w.Length > 0);
+        return _cfg.WakeWords.Where(w => !string.IsNullOrWhiteSpace(w)).Select(w => w.Trim().ToLowerInvariant())
+            .Where(w => w.Length >= 6)
+            .Any(wake => words.Any(w => w.Length >= 5 && w.StartsWith(wake[..5], StringComparison.Ordinal)));
+    }
+
+    /// <summary>The wake word is confirmed: now show "Listening…" and pause a reply that's playing. Inside _lock.</summary>
+    private void ConfirmWake()
+    {
+        if (!_silent) return;
+        _silent = false;
+        _lastVoice = DateTime.Now; // the pause timer starts now that you can see it's listening
+        if (_interruptedSpeech && IsSpeaking)
+        {
+            try { _tts.Pause(); _pausedSpeech = true; } catch { }
+        }
+        SetStatus(State.Listening, _listenPrompt);
+    }
+
+    /// <summary>False alarm: throw the recording away without showing anything. Inside _lock.</summary>
+    private void AbortCapture()
+    {
+        _capturing = false;
+        _silent = false;
+        _capture?.Dispose();
+        _capture = null;
+        _wakeRec.Reset();
+        _ignoreWakeUntil = DateTime.Now.AddSeconds(1);
     }
 
     /// <summary>Must be called inside _lock.</summary>
@@ -296,14 +450,38 @@ public class VoiceAssistant : IDisposable
         _capture = null;
         bool interrupted = _interruptedSpeech;
         bool verify = _needsVerify;
+        bool heardAnything = _heardSpeech;
+        bool stillSilent = _silent;
+        _silent = false;
+        if (stillSilent && !_checkStarted) StartQuickCheckOn(audio);
+        Task<bool> check = _check;
         bool paused = _pausedSpeech;
         _pausedSpeech = false;
         string offlineText = UsesCloudSpeech ? null : ReadField(_fullRec.FinalResult(), "text");
         _wakeRec.Reset();
 
+        // Nobody said anything after "Listening…": don't send silence off (Whisper tends to "hear"
+        // things like "Thank you." in silence).
+        if (!heardAnything && !verify)
+        {
+            SetStatus(State.Idle);
+            MicOffIfHotkeyMode();
+            return;
+        }
+
         if (!verify) SetStatus(State.Thinking, "");
         _ = Task.Run(async () =>
         {
+            // Finished talking before the quick re-check came back: wait for it, and drop false alarms silently.
+            if (stillSilent)
+            {
+                bool ok = false;
+                try { ok = check != null && await check; } catch { }
+                if (!ok) { lock (_lock) _ignoreWakeUntil = DateTime.Now.AddSeconds(1); return; }
+                if (interrupted && IsSpeaking) { try { _tts.Pause(); paused = true; } catch { } }
+                SetStatus(State.Listening);
+            }
+
             string text = offlineText;
             if (UsesCloudSpeech)
             {
@@ -333,9 +511,26 @@ public class VoiceAssistant : IDisposable
             }
 
             text = StripWakeWord(text, anywhere: verify);
+            // Whisper's well-known "phantom" phrases when it only hears noise.
+            if (Regex.IsMatch(text, @"^(thank you|thanks|thanks for watching|thank you for watching|you|bye|okay|so)\W*$", RegexOptions.IgnoreCase))
+                text = "";
 
             if (text.Length < 2)
             {
+                if (verify)
+                {
+                    // You said just "computer" (and paused): keep listening for the command.
+                    // Whatever you said while we were checking is in the buffer, so nothing is lost.
+                    lock (_lock)
+                    {
+                        if (!_capturing)
+                        {
+                            MicOn();
+                            BeginCapture(includePreBuffer: true, interrupted: false, needsVerify: false, silent: false, followUp: true);
+                        }
+                    }
+                    return;
+                }
                 SetStatus(State.Idle);
                 return;
             }
@@ -511,6 +706,6 @@ public class VoiceAssistant : IDisposable
     public void Dispose()
     {
         try { _mic?.StopRecording(); _mic?.Dispose(); } catch { }
-        try { _wakeRec?.Dispose(); _fullRec?.Dispose(); _model?.Dispose(); _tts?.Dispose(); } catch { }
+        try { _wakeRec?.Dispose(); _fullRec?.Dispose(); _checkRec?.Dispose(); _model?.Dispose(); _tts?.Dispose(); } catch { }
     }
 }

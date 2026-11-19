@@ -22,12 +22,21 @@ public class CommandRouter
     private readonly WeatherService _weather;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
     private readonly List<(string role, string text)> _history = new();
+    private readonly AppFinder _finder;
+
+    // A question we asked ("Did you mean Riot Client?") and what to do if you say yes.
+    private Func<Task<string>> _pendingYes;
+    private DateTime _pendingUntil;
+
+    /// <summary>True right after asking you a yes/no question; the notch then listens for the answer.</summary>
+    public bool ExpectsAnswer { get; private set; }
 
     public CommandRouter(AppConfig cfg, MediaService media, WeatherService weather)
     {
         _cfg = cfg;
         _media = media;
         _weather = weather;
+        _finder = new AppFinder(cfg);
         _http.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36");
         _http.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
@@ -37,6 +46,20 @@ public class CommandRouter
     public async Task<string> HandleAsync(string said)
     {
         string c = Normalize(said);
+        ExpectsAnswer = false;
+
+        // 0) Answer to our last question?
+        if (_pendingYes != null)
+        {
+            var yes = _pendingYes;
+            bool fresh = DateTime.Now < _pendingUntil;
+            _pendingYes = null;
+            if (fresh && Regex.IsMatch(c, @"^(yes|yeah|yep|yup|ya|yes please|sure|correct|right|that's right|ok|okay|do it|open it|go ahead|haan|haa|han|ha)\b"))
+                return await yes();
+            if (fresh && Regex.IsMatch(c, @"^(no|nope|nah|na|nahi|wrong|cancel|never ?mind|not that)\b"))
+                return "Okay, never mind.";
+            // Anything else: treat it as a new command.
+        }
 
         // 1) Quick local commands: instant, no internet needed.
         string local = await TryLocalAsync(c);
@@ -105,10 +128,36 @@ public class CommandRouter
         }
 
         // ----- volume -----
+        // "set volume to 50", "volume 30", "make it 70 percent"
+        var setVol = Regex.Match(c, @"\b(?:set |put |make |change )?(?:the )?(?:volume|sound|it)\s*(?:to|at)?\s*(\d{1,3})\s*(?:percent|%)?$");
+        if (setVol.Success && (c.Contains("volume") || c.Contains("sound") || c.Contains(" to ")))
+            return await RunActionAsync(new AiAction("set_volume") { Amount = int.Parse(setVol.Groups[1].Value) });
+        // "reduce the volume by 10", "turn it up by 20 percent"
+        var byVol = Regex.Match(c, @"\b(reduce|lower|decrease|down|turn it down|turn down|increase|raise|up|turn it up|turn up)\b.*?\bby\s+(\d{1,3})");
+        if (byVol.Success)
+        {
+            bool down = Regex.IsMatch(byVol.Groups[1].Value, "reduce|lower|decrease|down");
+            int amount = int.Parse(byVol.Groups[2].Value);
+            return await RunActionAsync(new AiAction("change_volume") { Amount = down ? -amount : amount });
+        }
         if (c.Contains("volume up") || c.Contains("louder") || c.Contains("increase the volume") || c.Contains("turn it up"))
-            return await RunActionAsync(new AiAction("volume_up"));
-        if (c.Contains("volume down") || c.Contains("quieter") || c.Contains("decrease the volume") || c.Contains("turn it down"))
-            return await RunActionAsync(new AiAction("volume_down"));
+            return await RunActionAsync(new AiAction("change_volume") { Amount = 10 });
+        if (c.Contains("volume down") || c.Contains("quieter") || c.Contains("decrease the volume") || c.Contains("reduce the volume") || c.Contains("turn it down"))
+            return await RunActionAsync(new AiAction("change_volume") { Amount = -10 });
+        if (Regex.IsMatch(c, @"^(what's the volume|what is the volume|volume)$"))
+            return $"Volume is at {Math.Round(Volume.Get())} percent.";
+
+        // ----- bluetooth -----
+        if (Regex.IsMatch(c, @"^(turn |switch )?(on )?bluetooth (on)$|^(turn|switch) on bluetooth$|^enable bluetooth$"))
+            return await RunActionAsync(new AiAction("bluetooth_on"));
+        if (Regex.IsMatch(c, @"^(turn |switch )?bluetooth off$|^(turn|switch) off bluetooth$|^disable bluetooth$"))
+            return await RunActionAsync(new AiAction("bluetooth_off"));
+        var bt = Regex.Match(c, @"^(connect|disconnect|reconnect)\s*(?:to\s+)?(?:my\s+|the\s+)?(.*)$");
+        if (bt.Success)
+        {
+            string what = bt.Groups[2].Value.Trim();
+            return await RunActionAsync(new AiAction(bt.Groups[1].Value == "disconnect" ? "bluetooth_disconnect" : "bluetooth_connect") { Target = what });
+        }
         if (c is "mute" or "unmute" or "mute it" or "unmute it" || c.Contains("mute the volume"))
             return await RunActionAsync(new AiAction("mute"));
 
@@ -148,6 +197,7 @@ public class CommandRouter
         public string Query = "";
         public string Where = "youtube music";
         public string Target = "";
+        public int Amount;
     }
 
     /// <summary>The AI replies with a line of JSON when you asked it to do something. Anything else is a normal answer.</summary>
@@ -167,6 +217,7 @@ public class CommandRouter
                 Query = Get("query"),
                 Target = Get("target"),
             };
+            if (r.TryGetProperty("amount", out var amt) && amt.ValueKind == JsonValueKind.Number) action.Amount = (int)Math.Round(amt.GetDouble());
             string where = Get("where").ToLowerInvariant();
             if (where.Length > 0) action.Where = where;
             else action.Where = "";
@@ -183,8 +234,8 @@ public class CommandRouter
             case "resume": await _media.PlayAsync(); return "Playing.";
             case "next": await _media.NextAsync(); return "Next one.";
             case "previous": await _media.PreviousAsync(); return "Going back.";
-            case "volume_up": for (int i = 0; i < 5; i++) Native.PressKey(Native.VK_VOLUME_UP); return "Louder.";
-            case "volume_down": for (int i = 0; i < 5; i++) Native.PressKey(Native.VK_VOLUME_DOWN); return "Quieter.";
+            case "volume_up": return await RunActionAsync(new AiAction("change_volume") { Amount = a.Amount != 0 ? Math.Abs(a.Amount) : 10 });
+            case "volume_down": return await RunActionAsync(new AiAction("change_volume") { Amount = a.Amount != 0 ? -Math.Abs(a.Amount) : -10 });
             case "mute": Native.PressKey(Native.VK_VOLUME_MUTE); return "Done.";
 
             case "play":
@@ -192,11 +243,9 @@ public class CommandRouter
                 if (string.IsNullOrWhiteSpace(a.Where)) a.Where = _cfg.MusicService ?? "youtube music";
                 if (a.Where.Contains("spotify"))
                 {
-                    // Spotify doesn't let apps start a song without signing in to its developer API,
-                    // so we open the search; the top result is one click away.
-                    if (SpotifyInstalled()) Open("spotify:search:" + Uri.EscapeDataString(a.Query));
-                    else Open("https://open.spotify.com/search/" + Uri.EscapeDataString(a.Query));
-                    return $"Here's {a.Query} on Spotify.";
+                    return await PlayOnSpotifyAsync(a.Query)
+                        ? $"Playing {a.Query} on Spotify."
+                        : $"Here's {a.Query} on Spotify. Tap play on the top result.";
                 }
                 bool music = !a.Where.Equals("youtube", StringComparison.OrdinalIgnoreCase);
                 await PlayOnYouTubeAsync(a.Query, music);
@@ -204,7 +253,26 @@ public class CommandRouter
 
             case "open":
                 if (string.IsNullOrWhiteSpace(a.Target)) return "Open what?";
-                return TryOpen(a.Target) ? $"Opening {a.Target}." : $"I couldn't find {a.Target}.";
+                return await Task.Run(() => OpenSmart(a.Target));
+
+            case "set_volume":
+                Volume.Set(Math.Clamp(a.Amount, 0, 100));
+                return $"Volume {Math.Clamp(a.Amount, 0, 100)} percent.";
+            case "change_volume":
+            {
+                double now = Volume.Get();
+                double target = Math.Clamp(Math.Round(now + a.Amount), 0, 100);
+                Volume.Set(target);
+                return $"Volume {target} percent.";
+            }
+
+            case "bluetooth_on":
+                return await BluetoothAudio.SetRadioAsync(true) ? "Bluetooth is on." : OpenBluetoothSettings("I couldn't switch Bluetooth on myself, so here are the settings.");
+            case "bluetooth_off":
+                return await BluetoothAudio.SetRadioAsync(false) ? "Bluetooth is off." : OpenBluetoothSettings("I couldn't switch Bluetooth off myself, so here are the settings.");
+            case "bluetooth_connect":
+            case "bluetooth_disconnect":
+                return await Task.Run(() => ConnectBluetooth(a.Target, a.Name == "bluetooth_connect"));
 
             case "search":
                 Open("https://www.google.com/search?q=" + Uri.EscapeDataString(a.Query));
@@ -222,6 +290,17 @@ public class CommandRouter
     /// <summary>Finds the top YouTube result and opens it, so the song starts straight away.</summary>
     private async Task PlayOnYouTubeAsync(string query, bool music)
     {
+        // YouTube Music: search its "Songs" section, so you get the song itself, not the music video.
+        if (music)
+        {
+            string songId = await FindYouTubeMusicSongAsync(query);
+            if (songId != null)
+            {
+                Open($"https://music.youtube.com/watch?v={songId}");
+                return;
+            }
+        }
+
         string id = null;
         try
         {
@@ -238,60 +317,149 @@ public class CommandRouter
             : music ? $"{host}/search?q={Uri.EscapeDataString(query)}" : $"{host}/results?search_query={Uri.EscapeDataString(query)}");
     }
 
-    private bool TryOpen(string name)
+    /// <summary>The top result in YouTube Music's "Songs" (audio versions), using the same search the website uses.</summary>
+    private async Task<string> FindYouTubeMusicSongAsync(string query)
     {
-        if (name is "music" or "my music" or "music app") { OpenMusicApp(_cfg); return true; }
-
-        // 1) Your shortcuts from config.json
-        var sc = _cfg.Shortcuts.FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-              ?? _cfg.Shortcuts.FirstOrDefault(s => s.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
-        if (sc != null)
+        try
         {
-            if (IsMusicTile(sc)) { OpenMusicApp(_cfg); return true; }
-            return Open(sc.Target, sc.Args);
-        }
-
-        // 2) Anything in the Start menu
-        var lnk = FindStartMenuShortcut(name);
-        if (lnk != null) return Open(lnk);
-
-        // 3) Common websites ("open youtube")
-        string site = name.Replace(" ", "");
-        if (Regex.IsMatch(site, @"^[a-z0-9-]+$") && new[] { "youtube", "gmail", "github", "reddit", "twitter", "instagram", "netflix", "chatgpt", "claude", "whatsapp", "twitch" }.Contains(site))
-        {
-            string url = site switch
+            var body = new
             {
-                "gmail" => "https://mail.google.com",
-                "claude" => "https://claude.ai",
-                "chatgpt" => "https://chatgpt.com",
-                "whatsapp" => "https://web.whatsapp.com",
-                "twitter" => "https://x.com",
-                _ => $"https://www.{site}.com",
+                context = new { client = new { clientName = "WEB_REMIX", clientVersion = "1.20251020.01.00", hl = "en", gl = "IN" } },
+                query,
+                @params = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D", // "Songs" filter
             };
-            return Open(url);
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+            {
+                Content = JsonContent.Create(body),
+            };
+            req.Headers.TryAddWithoutValidation("Origin", "https://music.youtube.com");
+            req.Headers.TryAddWithoutValidation("Referer", "https://music.youtube.com/");
+            using var resp = await _http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode) { Log.Write($"YouTube Music search: {(int)resp.StatusCode}"); return null; }
+            string json = await resp.Content.ReadAsStringAsync();
+            var m = Regex.Match(json, "\"videoId\":\"([A-Za-z0-9_-]{11})\"");
+            return m.Success ? m.Groups[1].Value : null;
+        }
+        catch (Exception ex) { Log.Write("YouTube Music search: " + ex.Message); return null; }
+    }
+
+    /// <summary>
+    /// Spotify doesn't let other apps start a song directly, so: open its search, then press the
+    /// Play button of the matching result through Windows accessibility (the same way a screen reader would).
+    /// </summary>
+    private static async Task<bool> PlayOnSpotifyAsync(string query)
+    {
+        if (!SpotifyInstalled())
+        {
+            Open("https://open.spotify.com/search/" + Uri.EscapeDataString(query));
+            return false;
+        }
+        Open("spotify:search:" + Uri.EscapeDataString(query));
+        for (int attempt = 0; attempt < 7; attempt++)
+        {
+            await Task.Delay(900);
+            try { if (await Task.Run(() => ClickSpotifyPlay(query))) return true; }
+            catch (Exception ex) { Log.Write("Spotify play: " + ex.Message); }
         }
         return false;
     }
 
-    private static string FindStartMenuShortcut(string name)
+    private static bool ClickSpotifyPlay(string query)
     {
-        var roots = new[]
+        IntPtr hwnd = IntPtr.Zero;
+        foreach (var p in Process.GetProcessesByName("Spotify"))
         {
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu),
-            Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-        };
-        var all = new List<string>();
-        foreach (var r in roots)
-        {
-            try { all.AddRange(Directory.EnumerateFiles(r, "*.lnk", SearchOption.AllDirectories)); } catch { }
+            if (hwnd == IntPtr.Zero && p.MainWindowHandle != IntPtr.Zero) hwnd = p.MainWindowHandle;
+            p.Dispose();
         }
-        string n = name.Replace(" ", "");
-        // Exact name first, then "starts with", then "contains". Skip uninstallers.
-        var candidates = all.Where(p => !Path.GetFileName(p).Contains("uninstall", StringComparison.OrdinalIgnoreCase)).ToList();
-        string Clean(string p) => Path.GetFileNameWithoutExtension(p).Replace(" ", "");
-        return candidates.FirstOrDefault(p => Clean(p).Equals(n, StringComparison.OrdinalIgnoreCase))
-            ?? candidates.FirstOrDefault(p => Clean(p).StartsWith(n, StringComparison.OrdinalIgnoreCase))
-            ?? candidates.FirstOrDefault(p => Clean(p).Contains(n, StringComparison.OrdinalIgnoreCase));
+        if (hwnd == IntPtr.Zero) return false;
+
+        var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+        var buttons = root.FindAll(System.Windows.Automation.TreeScope.Descendants,
+            new System.Windows.Automation.PropertyCondition(
+                System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Button));
+
+        var words = query.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length > 2).ToList();
+        System.Windows.Automation.AutomationElement best = null;
+        int bestScore = 0;
+        foreach (System.Windows.Automation.AutomationElement b in buttons)
+        {
+            string name = b.Current.Name ?? "";
+            // Result play buttons are labelled "Play <song> by <artist>"; the player bar's is just "Play".
+            if (!name.StartsWith("Play ", StringComparison.OrdinalIgnoreCase)) continue;
+            string rest = name[5..].ToLowerInvariant();
+            int score = words.Count(w => rest.Contains(w));
+            if (score > bestScore) { bestScore = score; best = b; }
+        }
+        if (best == null) return false;
+        if (best.TryGetCurrentPattern(System.Windows.Automation.InvokePattern.Pattern, out var pattern))
+        {
+            ((System.Windows.Automation.InvokePattern)pattern).Invoke();
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Opens the best match for what you said. Close-but-not-sure matches ("riot games" → Riot Client)
+    /// are asked about first: "Did you mean Riot Client?", then the notch listens for yes / no.
+    /// </summary>
+    private string OpenSmart(string name)
+    {
+        string n = name.Trim();
+        if (n is "music" or "my music" or "music app") { OpenMusicApp(_cfg); return "Opening your music."; }
+
+        var match = _finder.Find(n);
+        if (match == null || match.Score < 0.45) return $"I couldn't find {n}.";
+        if (match.Score >= 0.82)
+        {
+            match.Target.Open();
+            return $"Opening {match.Target.Name}.";
+        }
+        return Ask($"Did you mean {match.Target.Name}?", () =>
+        {
+            match.Target.Open();
+            return Task.FromResult($"Opening {match.Target.Name}.");
+        });
+    }
+
+    /// <summary>Asks a yes/no question; if the next thing you say is "yes", runs the action.</summary>
+    private string Ask(string question, Func<Task<string>> onYes)
+    {
+        _pendingYes = onYes;
+        _pendingUntil = DateTime.Now.AddSeconds(25);
+        ExpectsAnswer = true;
+        return question;
+    }
+
+    private string ConnectBluetooth(string spoken, bool connect)
+    {
+        var devices = BluetoothAudio.List();
+        if (devices.Count == 0)
+            return OpenBluetoothSettings("I couldn't find any paired Bluetooth headphones or speakers, so here are the Bluetooth settings.");
+
+        string wanted = System.Text.RegularExpressions.Regex.Replace(spoken ?? "", @"\b(bluetooth|device|devices|headphones?|headset|earbuds|buds|speaker|speakers|my|the|to|it)\b", " ").Trim();
+        var candidates = devices.Where(d => d.Connected != connect).ToList(); // only ones that can change
+        BluetoothAudio.Device target;
+        if (wanted.Length > 0) target = BluetoothAudio.Find(devices, spoken) ?? BluetoothAudio.Find(devices, wanted);
+        else if (candidates.Count == 1) target = candidates[0];
+        else if (candidates.Count == 0)
+            return connect ? "Your Bluetooth audio is already connected." : "Nothing's connected over Bluetooth.";
+        else
+            return Ask($"Which one? {string.Join(", or ", candidates.Select(d => d.Name))}. Say connect and the name.", () => Task.FromResult("Okay."));
+
+        if (target == null) return $"I couldn't find {spoken} in your Bluetooth devices.";
+        if (target.Connected == connect) return connect ? $"{target.Name} is already connected." : $"{target.Name} isn't connected.";
+
+        bool ok = BluetoothAudio.SetConnected(target, connect);
+        if (ok) return connect ? $"Connecting {target.Name}." : $"Disconnected {target.Name}.";
+        return OpenBluetoothSettings($"{target.Name} didn't respond. Is it switched on and nearby? Here are the Bluetooth settings.");
+    }
+
+    private static string OpenBluetoothSettings(string message)
+    {
+        Open("ms-settings:bluetooth");
+        return message;
     }
 
     /// <summary>The "Music" tile follows your music-app setting (older configs pointed it straight at YouTube Music).</summary>
@@ -343,7 +511,9 @@ public class CommandRouter
             "If the user wants you to DO something on the PC, reply with ONLY one line of JSON and nothing else, using one of:\n" +
             "{\"action\":\"play\",\"query\":\"<song, artist or video>\",\"where\":\"youtube music|youtube|spotify\"}\n" +
             "{\"action\":\"pause\"} {\"action\":\"resume\"} {\"action\":\"next\"} {\"action\":\"previous\"}\n" +
-            "{\"action\":\"volume_up\"} {\"action\":\"volume_down\"} {\"action\":\"mute\"}\n" +
+            "{\"action\":\"set_volume\",\"amount\":50} (exact %), {\"action\":\"change_volume\",\"amount\":-10} (up/down by %), {\"action\":\"mute\"}\n" +
+            "{\"action\":\"bluetooth_connect\",\"target\":\"<device name or empty>\"} {\"action\":\"bluetooth_disconnect\",\"target\":\"...\"} " +
+            "{\"action\":\"bluetooth_on\"} {\"action\":\"bluetooth_off\"}\n" +
             "{\"action\":\"open\",\"target\":\"<app or website name>\"}\n" +
             "{\"action\":\"search\",\"query\":\"<web search>\"}\n" +
             "{\"action\":\"weather\"} {\"action\":\"time\"}\n" +

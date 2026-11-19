@@ -106,7 +106,7 @@ public partial class SettingsWindow : Window
         ShowWeatherBox.IsChecked = _cfg.ShowWeatherInPill;
         SongPopupBox.IsChecked = _cfg.ShowSongPopups;
         StartupBox.IsChecked = _cfg.RunOnStartup;
-        AutoUpdateBox.IsChecked = _cfg.AutoUpdate;
+        SelectByTag(UpdateModeBox, _cfg.UpdateMode, "ask");
 
         // Voice & AI
         SelectByTag(MusicBox, (_cfg.MusicService ?? "").Contains("spotify") ? "spotify" : "youtube music", "youtube music");
@@ -155,7 +155,7 @@ public partial class SettingsWindow : Window
         c.ShowWeatherInPill = ShowWeatherBox.IsChecked == true;
         c.ShowSongPopups = SongPopupBox.IsChecked == true;
         c.RunOnStartup = StartupBox.IsChecked == true;
-        c.AutoUpdate = AutoUpdateBox.IsChecked == true;
+        c.UpdateMode = TagOf(UpdateModeBox, "ask");
 
         c.MusicService = TagOf(MusicBox, "youtube music");
         c.VoiceMode = TagOf(VoiceModeBox, "WakeWord");

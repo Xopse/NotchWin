@@ -31,8 +31,12 @@ public class AppConfig
 
     // ---------- General ----------
     public bool RunOnStartup { get; set; } = true;
-    /// <summary>Install new versions from GitHub Releases automatically.</summary>
+    /// <summary>Install new versions from GitHub Releases automatically. (Older setting, kept for compatibility.)</summary>
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>"ask" = show what's new and let you choose, "auto" = install by itself, "off" = never check.</summary>
+    public string UpdateMode { get; set; } = "ask";
+    /// <summary>A version you chose to skip (no more prompts for it).</summary>
+    public string SkippedVersion { get; set; } = "";
     /// <summary>The GitHub repository updates come from ("owner/name"). It must be public for updates to work.</summary>
     public string UpdateRepo { get; set; } = "Xopse/NotchWin";
     /// <summary>"Games" = hide only while a game is in front, "AnyFullscreen" = hide for any fullscreen app, "Never".</summary>
